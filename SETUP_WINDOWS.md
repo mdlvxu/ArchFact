@@ -24,7 +24,7 @@
 ## 2. 获取源码
 
 ```powershell
-git clone https://github.com/<YOUR_GITHUB_USERNAME>/ArchFact.git
+git clone https://github.com/mdlvxu/ArchFact.git
 Set-Location ArchFact
 ```
 
