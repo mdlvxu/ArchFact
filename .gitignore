@@ -1,0 +1,47 @@
+# Only publish the two applications and repository documentation
+/*
+!/.gitignore
+!/README.md
+!/SETUP_WINDOWS.md
+!/ArchFactClient/
+!/ArchFactServer/
+
+# Secrets and machine-specific Cursor configuration
+**/.env
+**/.env.*
+**/*.env
+!**/.env.example
+**/.cursor/mcp.json
+
+# Dependencies and virtual environments
+**/node_modules/
+**/.venv/
+**/.pnpm-store/
+
+# Runtime data, databases, logs, and caches
+**/.runtime/
+**/.runtime-logs/
+**/Ultralytics/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/*.egg-info/
+**/*.log
+
+# Build products
+**/dist/
+**/.vite/
+**/*.tsbuildinfo
+
+# Large local model weights
+**/models/**/*.pt
+
+# Local handoff and conversation exports
+**/ARCHFACT_CHATGPT_HANDOFF.md
+**/ARCHFACT_CONVERSATION_EXPORT.md
+
+# IDE and operating-system files
+**/.vscode/
+**/.idea/
+**/.DS_Store
+**/Thumbs.db

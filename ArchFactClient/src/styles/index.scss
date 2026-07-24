@@ -1,0 +1,54 @@
+@use './variables.scss';
+@use './element/index.scss';
+
+:root {
+  --af-font-page-title: 20px;
+  --af-font-panel-title: 18px;
+  --af-font-section-title: 16px;
+  --af-font-body: 14px;
+  --af-font-caption: 12px;
+  --af-font-micro: 10px;
+}
+
+// 全局基础样式重置
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  scrollbar-width: none;
+}
+
+// 隐藏 Chromium、Safari 和旧版 Edge 的滚动条，但保留滚轮和触控滚动能力
+*::-webkit-scrollbar {
+  display: none;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-size: var(--af-font-body);
+  font-family:
+    'Helvetica Neue',
+    Helvetica,
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    Arial,
+    sans-serif;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}

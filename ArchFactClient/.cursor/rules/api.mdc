@@ -1,0 +1,22 @@
+---
+description: Axios 请求、接口类型和错误处理规范
+globs: src/api/**/*.ts, src/types/api/**/*.ts
+alwaysApply: false
+---
+
+# Axios 规则
+
+- 禁止在组件中直接调用 axios。
+- 所有请求通过 `src/api/http.ts` 中的 request 方法。
+- 每个接口必须定义请求参数类型和响应类型。
+- 业务代码只能获得解析后的 data，不直接处理 AxiosResponse。
+- 401、403、500 等公共错误在拦截器统一处理。
+- 页面只处理与当前业务有关的错误提示。
+- 搜索、联想和频繁请求应考虑 AbortController。
+- 文件上传使用 FormData，不手动设置 multipart boundary。
+- Token 不得硬编码到源代码。
+
+# 中文注释
+
+- 每个 API 函数上方用中文注释说明用途、参数含义、返回值。
+- 复杂请求参数或响应结构在类型定义旁注释字段含义。

@@ -1,0 +1,58 @@
+---
+description: Vue 单文件组件和 Element Plus 的实现规范
+globs: src/**/*.vue, src/components/**/*.ts, src/composables/**/*.ts
+alwaysApply: false
+---
+
+# Vue SFC 结构
+
+统一顺序：
+
+1. `<script setup lang="ts">`
+2. `<template>`
+3. `<style scoped lang="scss">`
+
+# Props 和 Emits
+
+使用类型声明：
+
+```ts
+interface Props {
+  title: string
+  loading?: boolean
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  loading: false,
+})
+
+interface Emits {
+  submit: [value: string]
+  cancel: []
+}
+
+const emit = defineEmits<Emits>()
+```
+
+# Element Plus
+
+- 优先使用 Element Plus 现有组件，不重复实现按钮、弹窗、表单、分页和表格。
+- 表单必须定义明确的数据接口和表单校验规则。
+- ElTable 每列尽量设置稳定的 prop 和 key。
+- Dialog 的打开状态由父组件或 composable 管理。
+- 图标从 `@element-plus/icons-vue` 导入。
+- 不在多个页面复制相同表单或表格代码，抽取业务组件。
+
+# 样式
+
+- 重复颜色、圆角、间距和阴影必须抽成 CSS 变量。
+- 优先使用 flex 和 grid。
+- 禁止大量绝对定位复刻 Figma。
+- scoped 样式中谨慎使用 `:deep()`。
+- 不直接覆盖 Element Plus 全局类，统一放入 `src/styles/element`。
+
+# 中文注释
+
+- 每个组件顶部用中文说明组件用途。
+- Props、Emits、关键 computed / 方法需中文注释。
+- 模板中复杂区块用 `<!-- 区块说明 -->` 标注。

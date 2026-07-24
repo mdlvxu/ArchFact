@@ -1,0 +1,12 @@
+path: D:\PaddleOCR\yolov10\datasets\mycoco
+train: D:\PaddleOCR\yolov10\datasets\mycoco\images\train
+val: D:\PaddleOCR\yolov10\datasets\mycoco\images\train
+test:
+
+nc: 5  # 类别数，根据你的数据集调整
+names:
+  0: qiwu
+  1: xuhao
+  2: tuzhu
+  3: muzang
+  4: zhengti

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+
+src/types/auto-imports.d.ts
+src/types/components.d.ts
+
+public/**/*.svg
+public/**/*.png
+public/**/*.jpg
+public/**/*.jpeg
+public/**/*.webp

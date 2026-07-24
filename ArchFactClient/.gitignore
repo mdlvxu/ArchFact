@@ -1,0 +1,25 @@
+# 依赖目录
+node_modules/
+
+# 构建产物
+dist/
+
+# 本地环境变量（含敏感信息，勿提交）
+.env
+.env.*
+!.env.example
+
+# 编辑器
+.vscode/*
+!.vscode/extensions.json
+
+# 日志
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 锁文件（项目使用 pnpm）
+package-lock.json
+yarn.lock

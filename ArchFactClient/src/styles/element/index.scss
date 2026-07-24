@@ -1,0 +1,5 @@
+// Element Plus 全局样式覆盖，统一在此管理
+// 将 Element Plus 主色与项目 CSS 变量对齐
+:root {
+  --el-color-primary: var(--color-primary);
+}
