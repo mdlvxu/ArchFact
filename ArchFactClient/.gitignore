@@ -23,3 +23,12 @@ Thumbs.db
 # 锁文件（项目使用 pnpm）
 package-lock.json
 yarn.lock
+
+# Local runtimes and generated caches
+.runtime/
+.runtime-logs/
+.pnpm-store/
+*.tsbuildinfo
+
+# Local tool credentials
+.cursor/mcp.json

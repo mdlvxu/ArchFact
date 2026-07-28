@@ -42,6 +42,10 @@ const emit = defineEmits<{
 }>()
 const { t } = useI18n()
 
+/** 第三页暂不展示关系匹配与质量基线，后续需要时改回 true 即可。 */
+const showMatchingPanel = false
+const showQualityEvaluationPanel = false
+
 const rules = ref<VerificationRule[]>([
   {
     id: 1,
@@ -393,8 +397,14 @@ onBeforeUnmount(stopRematchPolling)
 </script>
 
 <template>
-  <div class="machine-verification-workspace">
-    <section class="matching-panel panel">
+  <div
+    class="machine-verification-workspace"
+    :class="{ 'machine-verification-workspace--compact': !showMatchingPanel && !showQualityEvaluationPanel }"
+  >
+    <section
+      v-if="showMatchingPanel"
+      class="matching-panel panel"
+    >
       <div class="matching-panel__identity">
         <span>{{ t('matching.title') }}</span>
         <strong>{{ activeMatchingVersionId || 'M0' }}</strong>
@@ -451,7 +461,7 @@ onBeforeUnmount(stopRematchPolling)
     </section>
 
     <RematchReportDialog
-      v-if="rematchReportOpen && rematchRun"
+      v-if="showMatchingPanel && rematchReportOpen && rematchRun"
       :run="rematchRun"
       :changes="rematchChanges"
       :loading="rematchChangesLoading"
@@ -462,6 +472,7 @@ onBeforeUnmount(stopRematchPolling)
     />
 
     <QualityEvaluationPanel
+      v-if="showQualityEvaluationPanel"
       :job-id="jobId"
       :document-id="documentId"
     />
@@ -505,6 +516,10 @@ onBeforeUnmount(stopRematchPolling)
   width: 100%;
   height: 100%;
   min-height: 0;
+}
+
+.machine-verification-workspace--compact {
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .matching-panel {

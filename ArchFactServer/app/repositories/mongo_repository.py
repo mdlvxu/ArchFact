@@ -1887,14 +1887,15 @@ class MongoRepository:
         for item in session.get("items", []):
             result = results.get(str(item.get("record_id")))
             items.append({**item, **result} if result else item)
-        conflicts = [item for item in items if item.get("consensus_status") == "conflict"]
         now = utc_now()
         updated = await self._db.verification_sessions.find_one_and_update(
             {"_id": session_id, "job_id": job_id, "status": "ai_review", "ai_run_id": run_id},
             {
                 "$set": {
                     "items": items,
-                    "status": "conflict_review" if conflicts else "ai_review",
+                    # Keep ai_review until finalize freezes the version. Conflicts are
+                    # informational only and no longer route users into conflict_review.
+                    "status": "ai_review",
                     "updated_at": now,
                 }
             },
@@ -1934,14 +1935,6 @@ class MongoRepository:
         unreviewed = [item for item in items if item.get("verdict") == "unreviewed"]
         if unreviewed:
             raise ConflictError(f"还有 {len(unreviewed)} 条样本尚未完成核验")
-
-        unresolved_conflicts = [
-            item
-            for item in items
-            if item.get("consensus_status") == "conflict" and not item.get("conflict_resolved")
-        ]
-        if unresolved_conflicts:
-            raise ConflictError(f"还有 {len(unresolved_conflicts)} 条人机冲突需要最终确认")
 
         pass_count = sum(item.get("verdict") == "passed" for item in items)
         fail_count = sum(item.get("verdict") == "failed" for item in items)

@@ -161,6 +161,30 @@ export function buildPreviewAnnotations(
           })
         })
     })
+
+    record.text_evidence
+      ?.filter((evidence) => evidence.page === page)
+      .forEach((evidence, evidenceIndex) => {
+        const region = evidence.region_id ? regions.get(evidence.region_id) : undefined
+        const bbox = normalizedEvidenceBox(region?.bbox) ?? normalizedEvidenceBox(evidence.bbox)
+        if (!bbox) return
+        annotations.push({
+          id: `${record.id}:text_evidence:${evidenceIndex}:${evidence.region_id ?? 'direct'}`,
+          regionId: evidence.region_id ?? undefined,
+          recordId: record.id,
+          fieldKey: 'text_evidence',
+          page,
+          kind: 'text',
+          regionKind: 'text',
+          label: 'Text Evidence',
+          quote: evidence.quote || region?.text || '',
+          bbox,
+          approximate: false,
+          relationIds: evidence.relation_ids ?? [],
+          source: evidence.source ?? region?.source,
+          confidence: evidence.confidence ?? region?.confidence,
+        })
+      })
   })
 
   // Semantic extraction and visual detection are independent. If the LLM fails,

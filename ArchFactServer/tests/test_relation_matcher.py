@@ -146,6 +146,48 @@ def test_caption_scopes_number_and_constrains_artifact_assignment() -> None:
     )
 
 
+def test_scope_orphaned_number_falls_back_to_adjacent_unscoped_artifact() -> None:
+    matcher = RelationMatcher(RelationMatcherConfig.from_settings(Settings(app_env="test")))
+    regions = [
+        {
+            "id": "caption-m13",
+            "page": 161,
+            "kind": "caption",
+            "bbox": [0.4092, 0.7165, 0.6366, 0.7678],
+            "text": "图3-14B M13出土器物（M13：13~15为1/4，余为1/2）",
+            "confidence": 0.95,
+        },
+        {
+            "id": "artifact-m13-9",
+            "page": 161,
+            "kind": "artifact",
+            "bbox": [0.1588, 0.5446, 0.4071, 0.7565],
+            "confidence": 0.95,
+        },
+        {
+            "id": "number-m13-9",
+            "page": 161,
+            "kind": "number",
+            "bbox": [0.2471, 0.7415, 0.3361, 0.7620],
+            "text": "M13:9",
+            "confidence": 0.95,
+        },
+    ]
+
+    relations = matcher.match_page(job_id="job-m13", page_no=161, regions=regions)
+
+    caption_relation = next(
+        relation for relation in relations if relation["relation_type"] == "caption_to_number"
+    )
+    number_relation = next(
+        relation for relation in relations if relation["relation_type"] == "number_of"
+    )
+    assert caption_relation["target_region_id"] == "number-m13-9"
+    assert number_relation["source_region_id"] == "number-m13-9"
+    assert number_relation["target_region_id"] == "artifact-m13-9"
+    assert number_relation["method"] == "directional_assignment_caption_scope_fallback"
+
+
 def test_caption_ocr_content_overrides_a_closer_wrong_caption() -> None:
     matcher = RelationMatcher(RelationMatcherConfig.from_settings(Settings(app_env="test")))
     regions = [

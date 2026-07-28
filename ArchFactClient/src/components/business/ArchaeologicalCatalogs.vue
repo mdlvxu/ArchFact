@@ -340,6 +340,23 @@ function pageThumbnail(record: ExtractionRecord) {
   return ''
 }
 
+function isFigureCaptionConflictWarning(warning: string) {
+  return (
+    warning.includes('字段 figure_caption 的分块结果不一致') ||
+    warning.includes('图注存在不一致的分块候选')
+  )
+}
+
+function warningText(warning: string) {
+  return isFigureCaptionConflictWarning(warning)
+    ? t('catalog.warning.figureCaptionConflict')
+    : warning
+}
+
+function figureCaptionConflictCandidates(record: ExtractionRecord) {
+  return record.fields.figure_caption?.conflict_candidates ?? []
+}
+
 function recordStatus(record: ExtractionRecord): ExtractionRecord['review_status'] {
   return props.reviewStatuses[record.id] ?? record.review_status
 }
@@ -600,13 +617,44 @@ function recordVerificationItem(record: ExtractionRecord) {
               </div>
             </dl>
 
-            <p
+            <div
               v-for="warning in record.warnings"
               :key="warning"
               class="record-warning"
             >
-              {{ warning }}
-            </p>
+              <strong class="record-warning__title">{{ warningText(warning) }}</strong>
+              <ul
+                v-if="
+                  isFigureCaptionConflictWarning(warning) &&
+                    figureCaptionConflictCandidates(record).length > 1
+                "
+                class="record-warning__candidates"
+              >
+                <li
+                  v-for="(candidate, candidateIndex) in figureCaptionConflictCandidates(record)"
+                  :key="`${candidateIndex}-${displayValue(candidate.value)}`"
+                  :class="{ 'record-warning__candidate--selected': candidate.selected }"
+                >
+                  <span class="record-warning__candidate-label">
+                    {{
+                      candidate.selected
+                        ? t('catalog.warning.selectedCandidate')
+                        : t('catalog.warning.alternativeCandidate')
+                    }}
+                  </span>
+                  <span class="record-warning__candidate-value">
+                    {{ displayValue(candidate.value) }}
+                  </span>
+                  <small>
+                    {{
+                      t('catalog.warning.evidenceCount', {
+                        count: candidate.evidence?.length ?? 0,
+                      })
+                    }}
+                  </small>
+                </li>
+              </ul>
+            </div>
           </section>
 
           <button
@@ -1249,12 +1297,70 @@ function recordVerificationItem(record: ExtractionRecord) {
 }
 
 .record-warning {
-  padding: 5px 7px;
+  display: grid;
+  gap: 6px;
+  padding: 7px 8px;
   margin-top: 6px;
-  font-size: 9px;
+  font-size: 10px;
   color: #9d5b35;
   background: #fff3e9;
+  border: 1px solid #f0d1b8;
   border-radius: 4px;
+}
+
+.record-warning__title {
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.record-warning__candidates {
+  display: grid;
+  gap: 5px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.record-warning__candidates li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: start;
+  padding: 5px 6px;
+  color: #72513c;
+  background: rgb(255 255 255 / 72%);
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+.record-warning__candidates .record-warning__candidate--selected {
+  background: #f4f8ff;
+  border-color: #b9d2f3;
+}
+
+.record-warning__candidate-label {
+  padding: 1px 4px;
+  font-size: 9px;
+  color: #8a603f;
+  white-space: nowrap;
+  background: #f8e2cf;
+  border-radius: 3px;
+}
+
+.record-warning__candidate--selected .record-warning__candidate-label {
+  color: #35628e;
+  background: #dcecff;
+}
+
+.record-warning__candidate-value {
+  min-width: 0;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.record-warning__candidates small {
+  color: #9a7a63;
+  white-space: nowrap;
 }
 
 .catalog-list {

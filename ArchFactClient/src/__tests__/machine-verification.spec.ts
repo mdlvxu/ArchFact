@@ -170,7 +170,8 @@ describe('Machine Verification 页面组件', () => {
     })
   })
 
-  it('keeps rematch as a preview until the user explicitly applies it', async () => {
+  it.skip('keeps rematch as a preview until the user explicitly applies it', async () => {
+    // 第三页关系匹配面板已临时隐藏（showMatchingPanel=false）。
     apiMocks.getVerificationVersions.mockResolvedValue([])
     apiMocks.createRematch.mockResolvedValue({ rematch_id: 'rematch-1', status: 'queued' })
     const completedRun = {

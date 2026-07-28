@@ -1266,15 +1266,215 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
                 if not isinstance(incoming, dict) or incoming.get("value") is None:
                     continue
                 if current.get("value") == incoming.get("value"):
-                    current["evidence"] = self._unique_evidence(
-                        [*current.get("evidence", []), *incoming.get("evidence", [])]
-                    )
+                    self._merge_matching_fields(current, incoming)
+                elif field_key == "figure_caption" and self._figure_captions_compatible(
+                    current.get("value"),
+                    incoming.get("value"),
+                ):
+                    self._merge_compatible_fields(current, incoming)
                 else:
-                    current["status"] = "needs_review"
+                    self._retain_field_conflict(current, incoming)
+                    warning = (
+                        "图注存在不一致的分块候选，已保留候选值供核对"
+                        if field_key == "figure_caption"
+                        else f"字段 {field_key} 的分块结果不一致"
+                    )
                     existing["warnings"] = self._unique_strings(
-                        [*existing.get("warnings", []), f"字段 {field_key} 的分块结果不一致"]
+                        [*existing.get("warnings", []), warning]
                     )
         return [record for record in merged.values() if self._is_meaningful_record(record)]
+
+    @classmethod
+    def _merge_matching_fields(
+        cls,
+        current: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> None:
+        current["evidence"] = cls._unique_evidence(
+            [*current.get("evidence", []), *incoming.get("evidence", [])]
+        )
+        candidates = current.get("conflict_candidates")
+        if not isinstance(candidates, list):
+            return
+        selected_marker = cls._field_value_marker(current.get("value"))
+        for candidate in candidates:
+            if (
+                isinstance(candidate, dict)
+                and cls._field_value_marker(candidate.get("value")) == selected_marker
+            ):
+                candidate["evidence"] = cls._unique_evidence(
+                    [*candidate.get("evidence", []), *incoming.get("evidence", [])]
+                )
+
+    @classmethod
+    def _merge_compatible_fields(
+        cls,
+        current: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> None:
+        """Merge equivalent/partial caption variants without creating a review warning."""
+
+        merged_evidence = cls._unique_evidence(
+            [*current.get("evidence", []), *incoming.get("evidence", [])]
+        )
+        if cls._field_candidate_score(incoming) > cls._field_candidate_score(current):
+            current["raw_value"] = incoming.get("raw_value")
+            current["value"] = incoming.get("value")
+        current["evidence"] = merged_evidence
+
+    @staticmethod
+    def _normalized_figure_caption(value: Any) -> str:
+        if value is None:
+            return ""
+        text = unicodedata.normalize("NFKC", str(value)).casefold()
+        return "".join(
+            character
+            for character in text
+            if not character.isspace()
+            and not unicodedata.category(character).startswith(("P", "Z"))
+        )
+
+    @staticmethod
+    def _figure_caption_reference_signature(value: Any) -> tuple[str, ...]:
+        """Extract comparable figure/plate references while retaining item separators."""
+
+        if value is None:
+            return ()
+        text = unicodedata.normalize("NFKC", str(value)).casefold()
+        text = re.sub(r"[()（）\[\]【】{}《》<>]", " ", text)
+        text = re.sub(r"[—–－]", "-", text)
+        text = text.replace("：", ":").replace("．", ".")
+        reference_pattern = re.compile(
+            r"(彩版|图版|插图|图|fig(?:ure)?\.?|plate\.?)\s*"
+            r"([0-9一二三四五六七八九十百零〇]+[a-z]?"
+            r"(?:\s*(?:[-:.]|\s)\s*[0-9一二三四五六七八九十百零〇]+[a-z]?)*"
+            r")",
+            re.IGNORECASE,
+        )
+        references: list[str] = []
+        for prefix, number in reference_pattern.findall(text):
+            family = "plate" if prefix.startswith(("彩版", "图版", "plate")) else "figure"
+            normalized_number = re.sub(r"\s+", " ", number).strip()
+            normalized_number = re.sub(
+                r"\s*([-:.])\s*",
+                r"\1",
+                normalized_number,
+            )
+            references.append(f"{family}:{normalized_number}")
+        return tuple(sorted(set(references)))
+
+    @classmethod
+    def _figure_captions_compatible(cls, current: Any, incoming: Any) -> bool:
+        current_text = cls._normalized_figure_caption(current)
+        incoming_text = cls._normalized_figure_caption(incoming)
+        if not current_text or not incoming_text:
+            return current_text == incoming_text
+
+        current_references = cls._figure_caption_reference_signature(current)
+        incoming_references = cls._figure_caption_reference_signature(incoming)
+        if (
+            current_references
+            and incoming_references
+            and current_references != incoming_references
+        ):
+            return False
+        if current_text == incoming_text:
+            return True
+
+        shorter, longer = sorted((current_text, incoming_text), key=len)
+        references_compatible = (
+            current_references == incoming_references
+            or not current_references
+            or not incoming_references
+        )
+        return references_compatible and len(shorter) >= 4 and shorter in longer
+
+    @staticmethod
+    def _field_value_marker(value: Any) -> str:
+        try:
+            return json.dumps(value, sort_keys=True, ensure_ascii=False)
+        except TypeError:
+            return str(value)
+
+    @classmethod
+    def _field_candidate_score(cls, field: dict[str, Any]) -> tuple[int, int, int, int]:
+        value = field.get("value")
+        value_text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+        compact_value = re.sub(r"\s+", "", value_text)
+        evidence = field.get("evidence", [])
+        if not isinstance(evidence, list):
+            evidence = []
+
+        grounding_score = 0
+        locator_count = 0
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            quote = unicodedata.normalize("NFKC", str(item.get("quote") or "")).casefold()
+            compact_quote = re.sub(r"\s+", "", quote)
+            if compact_value and compact_quote:
+                if compact_value == compact_quote:
+                    grounding_score += 3
+                elif compact_value in compact_quote or compact_quote in compact_value:
+                    grounding_score += 2
+            if item.get("bbox") is not None or item.get("region_id"):
+                locator_count += 1
+        return grounding_score, len(evidence), locator_count, len(compact_value)
+
+    @classmethod
+    def _field_conflict_candidates(
+        cls,
+        current: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        candidate_by_value: dict[str, dict[str, Any]] = {}
+
+        sources: list[Any] = []
+        for field in (current, incoming):
+            existing_candidates = field.get("conflict_candidates")
+            if isinstance(existing_candidates, list):
+                sources.extend(existing_candidates)
+            sources.append(field)
+
+        for source in sources:
+            if not isinstance(source, dict) or source.get("value") is None:
+                continue
+            marker = cls._field_value_marker(source.get("value"))
+            existing = candidate_by_value.get(marker)
+            if existing is not None:
+                existing["evidence"] = cls._unique_evidence(
+                    [*existing.get("evidence", []), *source.get("evidence", [])]
+                )
+                continue
+            candidate = {
+                "raw_value": source.get("raw_value"),
+                "value": source.get("value"),
+                "evidence": cls._unique_evidence(source.get("evidence", [])),
+                "selected": False,
+            }
+            candidates.append(candidate)
+            candidate_by_value[marker] = candidate
+        return candidates
+
+    @classmethod
+    def _retain_field_conflict(
+        cls,
+        current: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> None:
+        candidates = cls._field_conflict_candidates(current, incoming)
+        selected = max(candidates, key=cls._field_candidate_score)
+        selected_marker = cls._field_value_marker(selected.get("value"))
+        for candidate in candidates:
+            candidate["selected"] = (
+                cls._field_value_marker(candidate.get("value")) == selected_marker
+            )
+        current["raw_value"] = selected.get("raw_value")
+        current["value"] = selected.get("value")
+        current["evidence"] = selected.get("evidence", [])
+        current["status"] = "needs_review"
+        current["conflict_candidates"] = candidates
 
     @staticmethod
     def _is_meaningful_record(record: dict[str, Any]) -> bool:
@@ -1609,6 +1809,9 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             "只能输出 schema 中定义的 fields；完全缺失的字段不要输出，由后端统一补为 missing。"
             "非空字段必须提供逐字存在于 OCR 文本中的 evidence.quote，"
             "并优先返回对应 block 的 region_id。"
+            "每条以器物编号开头的记录，其原文范围从该编号所在 OCR block 开始，"
+            "连续跨越后续 block，直到下一个器物编号或段落结束；不得因 OCR 换行截断器物信息。"
+            "字段内容跨越多个 block 时，q 和 rid 必须返回顺序一致的数组，覆盖所有相关 block。"
             "不得虚构页码、器物编号、图号、图中序号、图版号或事实。"
             "器物编号（如 T3:3）、图号（如 图6）和图中序号（如 3）必须分开。"
             "evidence_block_ids 只能引用输入 ocr_blocks 中真实存在的 region_id。"
@@ -1659,8 +1862,11 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
                             "<schema_field_key>": {
                                 "v": "cleaned value",
                                 "raw": "OCR source value",
-                                "q": "exact OCR quote or quote array",
-                                "rid": "matching ocr_blocks.region_id",
+                                "q": "exact OCR quote or ordered quote array across wrapped blocks",
+                                "rid": (
+                                    "matching ocr_blocks.region_id or an ordered region_id array "
+                                    "aligned with q"
+                                ),
                                 "s": "valid or needs_review",
                             }
                         },

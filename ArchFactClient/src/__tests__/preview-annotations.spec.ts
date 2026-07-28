@@ -127,6 +127,73 @@ describe('buildPreviewAnnotations', () => {
     expect(annotations[0]?.bbox).toEqual([0.15, 0.86, 0.92, 0.9])
   })
 
+  it('renders every OCR line from complete record text evidence', () => {
+    const recordWithParagraph: ExtractionRecord = {
+      ...record,
+      fields: {
+        artifact_id: {
+          raw_value: 'M13：15',
+          value: 'M13:15',
+          status: 'valid',
+          evidence: [
+            {
+              page: 7,
+              quote: 'M13：15',
+              bbox: null,
+              region_id: 'm13-15-main',
+              kind: 'text',
+            },
+          ],
+        },
+      },
+      text_evidence: [
+        {
+          page: 7,
+          quote: 'M13：15，陶尊。泥质灰陶。口径9、',
+          bbox: null,
+          region_id: 'm13-15-main',
+          kind: 'text',
+        },
+        {
+          page: 7,
+          quote: '残高12厘米。（图3-14B；彩版五〇，4）',
+          bbox: null,
+          region_id: 'm13-15-continuation',
+          kind: 'text',
+        },
+      ],
+    }
+    const data: PageAnnotations = {
+      page: 7,
+      regions: [
+        {
+          ...annotationData.regions[0]!,
+          id: 'm13-15-main',
+          kind: 'text',
+          bbox: [0.104, 0.854, 0.877, 0.869],
+          text: 'M13：15，陶尊。泥质灰陶。口径9、',
+        },
+        {
+          ...annotationData.regions[0]!,
+          id: 'm13-15-continuation',
+          kind: 'text',
+          bbox: [0.063, 0.878, 0.445, 0.893],
+          text: '残高12厘米。（图3-14B；彩版五〇，4）',
+        },
+      ],
+      relations: [],
+      records: [recordWithParagraph],
+    }
+
+    const annotations = buildPreviewAnnotations([recordWithParagraph], data, 7)
+
+    expect(
+      annotations
+        .filter((annotation) => annotation.fieldKey === 'text_evidence')
+        .map((annotation) => annotation.regionId),
+    ).toEqual(['m13-15-main', 'm13-15-continuation'])
+  })
+
   it('does not invent a fallback box when evidence has no geometry', () => {
     expect(buildPreviewAnnotations([record], null, 7)).toHaveLength(0)
   })

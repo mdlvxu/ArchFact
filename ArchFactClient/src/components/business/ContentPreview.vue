@@ -381,8 +381,9 @@ function clusterTextEvidence(annotations: PreviewAnnotation[]) {
 }
 
 /**
- * One selected artifact should expose one readable semantic text block, not a
- * separate green rectangle for every extracted field.
+ * Consolidate duplicate field evidence on each OCR block while keeping every
+ * distinct text block that belongs to the selected artifact. A caption block
+ * must never hide the artifact-description line that contains its identifier.
  */
 const displayAnnotations = computed<PreviewAnnotation[]>(() => {
   const selectedRecordId =
@@ -399,52 +400,46 @@ const displayAnnotations = computed<PreviewAnnotation[]>(() => {
 
   const clusters = clusterTextEvidence(semanticText)
   const activeText = semanticText.find((annotation) => annotation.id === props.activeAnnotationId)
-  const selectedCluster =
-    clusters.find((cluster) => activeText && cluster.annotations.includes(activeText)) ??
-    [...clusters].sort((left, right) => {
-      const score = (cluster: (typeof clusters)[number]) =>
-        cluster.annotations.length * 1000 +
-        (cluster.bbox[2] - cluster.bbox[0]) * 100 +
-        cluster.annotations.reduce((total, annotation) => total + annotation.quote.length, 0)
-      return score(right) - score(left)
-    })[0]
-  if (!selectedCluster) return relevant.filter((annotation) => annotation.kind !== 'text')
+  const groupedText = clusters.map((cluster) => {
+    const base =
+      cluster.annotations.find((annotation) => annotation === activeText) ??
+      cluster.annotations.find((annotation) => annotation.fieldKey === 'artifact_id') ??
+      cluster.annotations.find(
+        (annotation) => annotation.regionId === activeRelation.value?.source_region_id,
+      ) ??
+      cluster.annotations[0]!
+    if (cluster.annotations.length === 1) return base
 
-  const base =
-    selectedCluster.annotations.find((annotation) => annotation.id === props.activeAnnotationId) ??
-    selectedCluster.annotations.find(
-      (annotation) => annotation.regionId === activeRelation.value?.source_region_id,
-    ) ??
-    selectedCluster.annotations[0]!
-  const uniqueQuotes = [...new Set(
-    selectedCluster.annotations.map((annotation) => annotation.quote.trim()).filter(Boolean),
-  )]
-  const [left, top, right, bottom] = selectedCluster.bbox
-  const grouped = selectedCluster.annotations.length > 1
-    ? {
-        ...base,
-        fieldKey: 'text_evidence',
-        label: t('preview.textEvidence'),
-        quote: uniqueQuotes.join('；'),
-        bbox: [
-          Math.max(0, left - 0.004),
-          Math.max(0, top - 0.003),
-          Math.min(1, right + 0.004),
-          Math.min(1, bottom + 0.003),
-        ] as AnnotationBox,
-        relationIds: [...new Set(
-          selectedCluster.annotations.flatMap((annotation) => annotation.relationIds ?? []),
-        )],
-        grouped: true,
-        groupedRegionIds: selectedCluster.annotations.flatMap(
+    const uniqueQuotes = [...new Set(
+      cluster.annotations.map((annotation) => annotation.quote.trim()).filter(Boolean),
+    )]
+    const [left, top, right, bottom] = cluster.bbox
+    return {
+      ...base,
+      fieldKey: 'text_evidence',
+      label: t('preview.textEvidence'),
+      quote: uniqueQuotes.join('；'),
+      bbox: [
+        Math.max(0, left - 0.004),
+        Math.max(0, top - 0.003),
+        Math.min(1, right + 0.004),
+        Math.min(1, bottom + 0.003),
+      ] as AnnotationBox,
+      relationIds: [...new Set(
+        cluster.annotations.flatMap((annotation) => annotation.relationIds ?? []),
+      )],
+      grouped: true,
+      groupedRegionIds: [...new Set(
+        cluster.annotations.flatMap(
           (annotation) => annotation.regionId ? [annotation.regionId] : [],
         ),
-      }
-    : base
+      )],
+    }
+  })
 
   return [
     ...relevant.filter((annotation) => !semanticText.includes(annotation)),
-    grouped,
+    ...groupedText,
   ]
 })
 

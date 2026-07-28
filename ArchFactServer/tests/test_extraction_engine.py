@@ -6,7 +6,7 @@ import pytest
 
 from app.core.config import Settings
 from app.core.errors import DomainError
-from app.models.schemas import ExtractionConfig, ExtractionFieldSpec
+from app.models.schemas import ExtractedFieldView, ExtractionConfig, ExtractionFieldSpec
 from app.services.extraction_engine import (
     CozeExtractionEngine,
     CozeHttpExtractionEngine,
@@ -271,6 +271,133 @@ def test_chunk_merge_discards_empty_or_unidentified_single_field_fragments() -> 
 
     assert len(merged) == 1
     assert merged[0]["fields"]["figure_caption"]["value"] == "图6"
+
+
+def test_chunk_merge_treats_caption_spacing_and_punctuation_as_equivalent() -> None:
+    engine = object.__new__(OpenAICompatibleExtractionEngine)
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [20],
+            "fields": {
+                "artifact_id": {"value": "T3:3"},
+                "figure_caption": {
+                    "raw_value": "图６（1—4） 为陶鬲足。",
+                    "value": "图６（1—4） 为陶鬲足。",
+                    "status": "valid",
+                    "evidence": [{"page": 20, "quote": "图６（1—4） 为陶鬲足。"}],
+                },
+            },
+        },
+        {
+            "record_type": "artifact",
+            "source_pages": [21],
+            "fields": {
+                "artifact_id": {"value": "T3:3"},
+                "figure_caption": {
+                    "raw_value": "图6 1-4为陶鬲足",
+                    "value": "图6 1-4为陶鬲足",
+                    "status": "valid",
+                    "evidence": [{"page": 21, "quote": "图6 1-4为陶鬲足"}],
+                },
+            },
+        },
+    ]
+
+    merged = engine._merge_records(records)
+    caption = merged[0]["fields"]["figure_caption"]
+
+    assert caption["status"] == "valid"
+    assert len(caption["evidence"]) == 2
+    assert caption.get("conflict_candidates") is None
+    assert not merged[0].get("warnings")
+
+
+def test_chunk_merge_prefers_complete_compatible_caption() -> None:
+    engine = object.__new__(OpenAICompatibleExtractionEngine)
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [20],
+            "fields": {
+                "artifact_id": {"value": "T3:3"},
+                "figure_caption": {
+                    "value": "图6 1—4",
+                    "status": "valid",
+                    "evidence": [{"page": 20, "quote": "图6 1—4"}],
+                },
+            },
+        },
+        {
+            "record_type": "artifact",
+            "source_pages": [20],
+            "fields": {
+                "artifact_id": {"value": "T3:3"},
+                "figure_caption": {
+                    "value": "图6 1—4为陶鬲足",
+                    "status": "valid",
+                    "evidence": [{"page": 20, "quote": "图6 1—4为陶鬲足"}],
+                },
+            },
+        },
+    ]
+
+    merged = engine._merge_records(records)
+    caption = merged[0]["fields"]["figure_caption"]
+
+    assert caption["value"] == "图6 1—4为陶鬲足"
+    assert caption["status"] == "valid"
+    assert len(caption["evidence"]) == 2
+    assert not merged[0].get("warnings")
+
+
+def test_chunk_merge_retains_true_caption_conflict_candidates_and_selects_grounded_value() -> None:
+    engine = object.__new__(OpenAICompatibleExtractionEngine)
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [20],
+            "fields": {
+                "artifact_id": {"value": "T3:3"},
+                "figure_caption": {
+                    "raw_value": "图6 1—4为陶鬲足",
+                    "value": "图6 1—4为陶鬲足",
+                    "status": "needs_review",
+                    "evidence": [],
+                },
+            },
+        },
+        {
+            "record_type": "artifact",
+            "source_pages": [21],
+            "fields": {
+                "artifact_id": {"value": "T3:3"},
+                "figure_caption": {
+                    "raw_value": "图7 1—4为陶鬲足",
+                    "value": "图7 1—4为陶鬲足",
+                    "status": "valid",
+                    "evidence": [{"page": 21, "quote": "图7 1—4为陶鬲足"}],
+                },
+            },
+        },
+    ]
+
+    merged = engine._merge_records(records)
+    caption = merged[0]["fields"]["figure_caption"]
+    candidates = caption["conflict_candidates"]
+
+    assert caption["value"] == "图7 1—4为陶鬲足"
+    assert caption["status"] == "needs_review"
+    assert {candidate["value"] for candidate in candidates} == {
+        "图6 1—4为陶鬲足",
+        "图7 1—4为陶鬲足",
+    }
+    assert sum(candidate["selected"] for candidate in candidates) == 1
+    assert next(candidate for candidate in candidates if candidate["selected"])["evidence"] == [
+        {"page": 21, "quote": "图7 1—4为陶鬲足"}
+    ]
+    assert ExtractedFieldView.model_validate(caption).conflict_candidates
+    assert merged[0]["warnings"] == ["图注存在不一致的分块候选，已保留候选值供核对"]
 
 
 def test_structured_adapter_derives_internal_link_hints() -> None:

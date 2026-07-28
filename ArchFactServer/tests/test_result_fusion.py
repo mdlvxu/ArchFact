@@ -97,6 +97,214 @@ def test_fusion_links_text_evidence_to_number_and_artifact_regions() -> None:
     assert any(relation["relation_type"] == "evidence_for" for relation in output.relations)
 
 
+def test_fusion_completes_wrapped_figure_caption_without_consuming_next_artifact() -> None:
+    service = ResultFusionService()
+    config = ExtractionConfig(
+        template_id="basic",
+        template_name="Basic",
+        fields=[
+            ExtractionFieldSpec(key="artifact_id", label="Artifact ID", type="string"),
+            ExtractionFieldSpec(key="figure_caption", label="Figure Caption", type="string"),
+        ],
+    )
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [160],
+            "fields": {
+                "artifact_id": {
+                    "value": "M13:8",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 160,
+                            "quote": "M13：8",
+                            "bbox": [0.1013, 0.5697, 0.8780, 0.5887],
+                            "region_id": "text-main",
+                            "kind": "text",
+                        }
+                    ],
+                },
+                "figure_caption": {
+                    "raw_value": "图3-14B",
+                    "value": "图3-14B",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 160,
+                            "quote": "图3-14B",
+                            "bbox": [0.1013, 0.5697, 0.8780, 0.5887],
+                            "region_id": "text-main",
+                            "kind": "text",
+                        }
+                    ],
+                },
+            },
+            "link_hints": {"caption_texts": ["图3-14B"]},
+            "warnings": [],
+        }
+    ]
+    regions = [
+        {
+            "id": "text-main",
+            "page": 160,
+            "kind": "text",
+            "text": "M13：8，玉珠。白色闪玉。腰鼓形，一端破损。高1.8、直径1.4厘米。（图3-14B；",
+            "bbox": [0.1013, 0.5697, 0.8780, 0.5887],
+            "source": "paddleocr",
+        },
+        {
+            "id": "text-continuation",
+            "page": 160,
+            "kind": "text",
+            "text": "彩版四九，2）",
+            "bbox": [0.0607, 0.5916, 0.1940, 0.6116],
+            "source": "paddleocr",
+        },
+        {
+            "id": "text-next-artifact",
+            "page": 160,
+            "kind": "text",
+            "text": "M13：9，玉镯。乳白色闪玉。",
+            "bbox": [0.1027, 0.6188, 0.8887, 0.6331],
+            "source": "paddleocr",
+        },
+    ]
+
+    output = service.fuse(
+        job_id="job-m13-8",
+        records=records,
+        regions=regions,
+        relations=[],
+        config=config,
+        model_run_id="run-fusion",
+    )
+
+    caption = output.records[0]["fields"]["figure_caption"]
+    assert caption["raw_value"] == "（图3-14B；彩版四九，2）"
+    assert caption["value"] == "图3-14B;彩版四九,2"
+    assert [evidence["region_id"] for evidence in caption["evidence"]] == [
+        "text-main",
+        "text-continuation",
+    ]
+    assert "text-next-artifact" not in {
+        evidence["region_id"] for evidence in caption["evidence"]
+    }
+    assert "text-continuation" in output.records[0]["region_ids"]
+    assert "text-next-artifact" not in output.records[0]["region_ids"]
+    assert [
+        evidence["region_id"] for evidence in output.records[0]["text_evidence"]
+    ] == ["text-main", "text-continuation"]
+    assert "图3-14B;彩版四九,2" in output.records[0]["link_hints"]["caption_texts"]
+
+
+def test_fusion_builds_complete_artifact_paragraph_until_next_identifier() -> None:
+    service = ResultFusionService()
+    config = ExtractionConfig(
+        template_id="basic",
+        template_name="Basic",
+        fields=[
+            ExtractionFieldSpec(key="artifact_id", label="Artifact ID", type="string"),
+            ExtractionFieldSpec(key="measurements", label="Measurements", type="string"),
+        ],
+    )
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [160],
+            "fields": {
+                "artifact_id": {
+                    "value": "M13:15",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 160,
+                            "quote": "M13：15",
+                            "bbox": [0.104, 0.8540, 0.8767, 0.8688],
+                            "region_id": "m13-15-main",
+                            "kind": "text",
+                        }
+                    ],
+                },
+                "measurements": {
+                    "value": "口径 9 cm",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 160,
+                            "quote": "口径9、",
+                            "bbox": [0.104, 0.8540, 0.8767, 0.8688],
+                            "region_id": "m13-15-main",
+                            "kind": "text",
+                        }
+                    ],
+                },
+            },
+            "link_hints": {"artifact_ids": ["M13:15"]},
+            "warnings": [],
+        }
+    ]
+    regions = [
+        {
+            "id": "m13-15-main",
+            "page": 160,
+            "kind": "text",
+            "text": (
+                "M13：15，陶尊。泥质灰陶。直口略卷，尖唇，直腹微鼓，"
+                "底近平，圈足残。口径9、"
+            ),
+            "bbox": [0.104, 0.8540, 0.8767, 0.8688],
+            "source": "paddleocr",
+        },
+        {
+            "id": "m13-15-continuation",
+            "page": 160,
+            "kind": "text",
+            "text": "残高12厘米。（图3-14B；彩版五O，4）",
+            "bbox": [0.0627, 0.8783, 0.4447, 0.8927],
+            "source": "paddleocr",
+        },
+        {
+            "id": "m13-16",
+            "page": 160,
+            "kind": "text",
+            "text": "M13：16，玉珠。白色闪玉。矮腰鼓形。",
+            "bbox": [0.1027, 0.9012, 0.8033, 0.9156],
+            "source": "paddleocr",
+        },
+    ]
+
+    output = service.fuse(
+        job_id="job-m13-15",
+        records=records,
+        regions=regions,
+        relations=[],
+        config=config,
+        model_run_id="run-fusion",
+    )
+
+    record = output.records[0]
+    assert [evidence["region_id"] for evidence in record["text_evidence"]] == [
+        "m13-15-main",
+        "m13-15-continuation",
+    ]
+    assert [evidence["quote"] for evidence in record["text_evidence"]] == [
+        (
+            "M13：15，陶尊。泥质灰陶。直口略卷，尖唇，直腹微鼓，"
+            "底近平，圈足残。口径9、"
+        ),
+        "残高12厘米。（图3-14B；彩版五O，4）",
+    ]
+    assert "m13-15-continuation" in record["region_ids"]
+    assert "m13-16" not in record["region_ids"]
+    assert record["fields"]["measurements"]["raw_value"] == "口径9、残高12厘米"
+    assert record["fields"]["measurements"]["value"] == "口径 9 cm；残高 12 cm"
+    assert [
+        evidence["region_id"]
+        for evidence in record["fields"]["measurements"]["evidence"]
+    ] == ["m13-15-main", "m13-15-continuation"]
+
+
 def test_fusion_links_deepseek_hint_to_cross_page_caption_and_artifact() -> None:
     service = ResultFusionService()
     config = ExtractionConfig(

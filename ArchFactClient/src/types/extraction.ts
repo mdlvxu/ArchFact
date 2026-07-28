@@ -144,6 +144,14 @@ export interface ExtractedField {
   value: unknown
   status: 'valid' | 'missing' | 'needs_review'
   evidence: ExtractionEvidence[]
+  conflict_candidates?: ExtractedFieldConflictCandidate[]
+}
+
+export interface ExtractedFieldConflictCandidate {
+  raw_value: unknown
+  value: unknown
+  evidence: ExtractionEvidence[]
+  selected: boolean
 }
 
 export interface ExtractionRecord {
@@ -152,6 +160,7 @@ export interface ExtractionRecord {
   record_type: string
   source_pages: number[]
   fields: Record<string, ExtractedField>
+  text_evidence?: ExtractionEvidence[]
   linkage?: {
     identity: {
       artifact_id_raw?: string | null

@@ -1,5 +1,6 @@
 .venv/
 .runtime/
+.runtime-logs/
 __pycache__/
 **/__pycache__/
 .pytest_cache/
@@ -7,5 +8,11 @@ __pycache__/
 *.egg-info/
 .env
 .env.*
+*.env
 !.env.example
 models/**/*.pt
+*.py[cod]
+*.log
+*.onnx
+*.pth
+Ultralytics/

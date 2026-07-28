@@ -39,6 +39,7 @@ from app.models.schemas import (
     VerificationSessionView,
     VerificationVersionView,
 )
+from app.services.result_fusion import ResultFusionService
 
 router = APIRouter(prefix="/extraction-jobs", tags=["extraction-jobs"])
 
@@ -59,6 +60,7 @@ def build_record_view(record: dict, *, compact: bool = False) -> ExtractionRecor
         record_type=record["record_type"],
         source_pages=record["source_pages"],
         fields=record["fields"],
+        text_evidence=[] if compact else record.get("text_evidence", []),
         linkage=linkage,
         link_hints=record.get("link_hints", {}),
         warnings=record.get("warnings", []),
@@ -495,6 +497,48 @@ async def get_record_evidence_context(
 ) -> ApiResponse[RecordEvidenceContextView]:
     await container.repository.get_job(job_id)
     record = await container.repository.get_record(job_id, record_id)
+
+    # Older extraction results may contain only the first OCR line of a wrapped
+    # figure/plate reference. Complete it in the response as well as during new
+    # fusion runs, so an existing job becomes correct as soon as it is reopened.
+    source_pages = {
+        page
+        for page in record.get("source_pages", [])
+        if isinstance(page, int)
+    }
+    for field_key in ("figure_caption", "artifact_id"):
+        field = record.get("fields", {}).get(field_key, {})
+        if not isinstance(field, dict):
+            continue
+        source_pages.update(
+            evidence["page"]
+            for evidence in field.get("evidence", [])
+            if isinstance(evidence, dict) and isinstance(evidence.get("page"), int)
+        )
+    persisted_source_regions = []
+    for page_no in sorted(source_pages):
+        persisted_source_regions.extend(
+            await container.repository.list_page_regions(job_id, page_no)
+        )
+    source_regions = [
+        {
+            **region,
+            "id": str(region.get("id") or region["_id"]),
+        }
+        for region in persisted_source_regions
+    ]
+    if source_regions:
+        ResultFusionService.complete_record_text_evidence(
+            records=[record],
+            regions=source_regions,
+            region_by_id={str(region["id"]): region for region in source_regions},
+        )
+        ResultFusionService.complete_multiline_figure_caption_evidence(
+            records=[record],
+            regions=source_regions,
+            region_by_id={str(region["id"]): region for region in source_regions},
+        )
+
     region_ids = set(record.get("region_ids", []))
     relation_ids = set(record.get("relation_ids", []))
     entity = None
