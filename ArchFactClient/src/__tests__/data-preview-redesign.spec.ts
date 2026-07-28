@@ -118,6 +118,50 @@ const record: ExtractionRecord = {
 }
 
 describe('Data Preview redesigned interactions', () => {
+  it('explains figure caption conflicts and shows the retained candidates', () => {
+    const conflictRecord: ExtractionRecord = {
+      ...record,
+      fields: {
+        ...record.fields,
+        figure_caption: {
+          raw_value: '图7 1—4为陶鬲足',
+          value: '图7 1—4为陶鬲足',
+          status: 'needs_review',
+          evidence: [{ page: 8, quote: '图7 1—4为陶鬲足' }],
+          conflict_candidates: [
+            {
+              raw_value: '图6 1—4为陶鬲足',
+              value: '图6 1—4为陶鬲足',
+              evidence: [],
+              selected: false,
+            },
+            {
+              raw_value: '图7 1—4为陶鬲足',
+              value: '图7 1—4为陶鬲足',
+              evidence: [{ page: 8, quote: '图7 1—4为陶鬲足' }],
+              selected: true,
+            },
+          ],
+        },
+      },
+      warnings: ['字段 figure_caption 的分块结果不一致'],
+    }
+    const wrapper = mount(ArchaeologicalCatalogs, {
+      props: {
+        records: [conflictRecord],
+        pages: [],
+        selectedPage: 8,
+        selectedRecordId: conflictRecord.id,
+        mode: 'verify',
+      },
+    })
+
+    expect(wrapper.find('.record-warning__title').text()).not.toContain('figure_caption')
+    expect(wrapper.findAll('.record-warning__candidates li')).toHaveLength(2)
+    expect(wrapper.find('.record-warning__candidate--selected').text()).toContain('图7 1—4为陶鬲足')
+    expect(wrapper.find('.record-warning').text()).toContain('图6 1—4为陶鬲足')
+  })
+
   it('requires a structured failure category before emitting a failed review', async () => {
     const wrapper = mount(ArchaeologicalCatalogs, {
       props: {
@@ -426,6 +470,59 @@ describe('Data Preview redesigned interactions', () => {
     const style = textBoxes[0]!.attributes('style')
     expect(Number.parseFloat(style.match(/width:\s*([\d.]+)%/)?.[1] ?? '0'))
       .toBeGreaterThan(60)
+  })
+
+  it('keeps the artifact description visible when a separate caption block is active', () => {
+    const artifactLine = region('m13-9-line', 'text', [0.1, 0.58, 0.88, 0.61])
+    artifactLine.text = 'M13:9，玉镯。乳白色闪玉。高1.8厘米。'
+    const captionLine = region('m13-caption-line', 'text', [0.1, 0.68, 0.35, 0.71])
+    captionLine.text = '（图3-14B；彩版五〇）'
+    const artifactIdAnnotation: PreviewAnnotation = {
+      ...annotations[1]!,
+      id: 'm13-9-artifact-id',
+      regionId: artifactLine.id,
+      recordId: 'record-m13-9',
+      fieldKey: 'artifact_id',
+      regionKind: 'text',
+      label: 'Artifact ID',
+      quote: 'M13:9',
+      bbox: artifactLine.bbox,
+    }
+    const materialAnnotation: PreviewAnnotation = {
+      ...artifactIdAnnotation,
+      id: 'm13-9-material',
+      fieldKey: 'texture',
+      label: 'Texture',
+      quote: '乳白色闪玉',
+    }
+    const captionAnnotation: PreviewAnnotation = {
+      ...artifactIdAnnotation,
+      id: 'm13-9-caption',
+      regionId: captionLine.id,
+      fieldKey: 'figure_caption',
+      label: 'Figure Caption',
+      quote: '图3-14B',
+      bbox: captionLine.bbox,
+    }
+    const wrapper = mount(ContentPreview, {
+      props: {
+        page: 160,
+        previewUrl: 'data:image/png;base64,current-page',
+        fileName: 'catalog.pdf',
+        loading: false,
+        interactive: true,
+        annotations: [artifactIdAnnotation, materialAnnotation, captionAnnotation],
+        regions: [artifactLine, captionLine],
+        relations: [],
+        activeAnnotationId: captionAnnotation.id,
+      },
+    })
+
+    const textBoxes = wrapper.findAll('.evidence-box--text')
+    const titles = textBoxes.map((box) => box.attributes('title'))
+    expect(textBoxes).toHaveLength(2)
+    expect(titles.some((title) => title.includes('M13:9'))).toBe(true)
+    expect(titles.some((title) => title.includes('图3-14B'))).toBe(true)
   })
 
   it('focuses a high-resolution source page around a small related artifact box', () => {

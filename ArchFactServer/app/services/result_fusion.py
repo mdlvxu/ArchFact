@@ -25,9 +25,24 @@ class FusionOutput:
 class ResultFusionService:
     provider = "archfact"
     model = "spatial-evidence-fusion"
-    version = "5"
+    version = "7"
     page_window = 3
     link_hint_min_score = 0.62
+    _artifact_line_pattern = re.compile(
+        r"^\s*[A-Z]{1,6}\s*\d+[A-Z]?\s*[:：]\s*[A-Z]?\d+[A-Z]?\b",
+        re.IGNORECASE,
+    )
+    _visual_reference_pattern = re.compile(
+        r"(?:图|彩版|图版|fig(?:ure)?|plate)",
+        re.IGNORECASE,
+    )
+    _measurement_value_pattern = re.compile(
+        r"(?P<label>最大径|直径|残高|通高|全高|口径|底径|腹径|孔径|刃宽|足高|耳高|"
+        r"高|长|宽|厚|径)\s*(?P<approx>约)?\s*"
+        r"(?P<value>\d+(?:[.,]\d+)?)\s*"
+        r"(?P<unit>厘米|毫米|米|cm|mm|m)?",
+        re.IGNORECASE,
+    )
     hint_weights = {
         "figure_refs": 1.0,
         "figure_item_nos": 1.0,
@@ -165,6 +180,17 @@ class ResultFusionService:
             expected_counts[record_index] += 1
             matched_counts[record_index] += 1
 
+        self.complete_record_text_evidence(
+            records=records,
+            regions=regions,
+            region_by_id=region_by_id,
+        )
+        self.complete_multiline_figure_caption_evidence(
+            records=records,
+            regions=regions,
+            region_by_id=region_by_id,
+        )
+
         for index, record in enumerate(records):
             record["region_ids"] = sorted(set(record.get("region_ids", [])))
             record["relation_ids"] = sorted(set(record.get("relation_ids", [])))
@@ -217,6 +243,458 @@ class ResultFusionService:
                 record["fusion_status"] = "partial"
 
         return FusionOutput(records=records, relations=list(relation_by_id.values()))
+
+    @classmethod
+    def complete_record_text_evidence(
+        cls,
+        *,
+        records: list[dict[str, Any]],
+        regions: list[dict[str, Any]],
+        region_by_id: dict[str, dict[str, Any]],
+    ) -> None:
+        """Build complete artifact paragraphs from consecutive OCR text lines."""
+
+        text_regions_by_page: dict[int, list[dict[str, Any]]] = {}
+        for region in regions:
+            page = region.get("page")
+            if (
+                region.get("kind") == "text"
+                and isinstance(page, int)
+                and cls._is_bbox(region.get("bbox"))
+                and cls._region_text(region)
+            ):
+                text_regions_by_page.setdefault(page, []).append(region)
+        for page_regions in text_regions_by_page.values():
+            page_regions.sort(
+                key=lambda region: (
+                    float(region["bbox"][1]),
+                    float(region["bbox"][0]),
+                )
+            )
+
+        for record in records:
+            fields = record.get("fields", {})
+            artifact_field = fields.get("artifact_id", {}) if isinstance(fields, dict) else {}
+            if not isinstance(artifact_field, dict):
+                continue
+            expected_identifier = cls._normalize_artifact_identifier(
+                artifact_field.get("value") or artifact_field.get("raw_value")
+            )
+            artifact_evidence = artifact_field.get("evidence", [])
+            if not isinstance(artifact_evidence, list):
+                artifact_evidence = []
+
+            evidence_anchors = [
+                region_by_id[str(evidence["region_id"])]
+                for evidence in artifact_evidence
+                if isinstance(evidence, dict)
+                and evidence.get("region_id")
+                and str(evidence["region_id"]) in region_by_id
+            ]
+            anchor = next(
+                (
+                    region
+                    for region in evidence_anchors
+                    if cls._region_artifact_identifier(region) == expected_identifier
+                ),
+                None,
+            )
+            if anchor is None and expected_identifier:
+                source_pages = {
+                    page
+                    for page in record.get("source_pages", [])
+                    if isinstance(page, int)
+                }
+                anchor = next(
+                    (
+                        region
+                        for page in sorted(source_pages)
+                        for region in text_regions_by_page.get(page, [])
+                        if cls._region_artifact_identifier(region) == expected_identifier
+                    ),
+                    None,
+                )
+            if (
+                anchor is None
+                or anchor.get("kind") != "text"
+                or not cls._is_bbox(anchor.get("bbox"))
+            ):
+                continue
+
+            paragraph_regions = [anchor]
+            current = anchor
+            for _ in range(5):
+                continuation = cls._next_wrapped_text_region(
+                    current=current,
+                    page_regions=text_regions_by_page.get(int(anchor["page"]), []),
+                    excluded_ids={str(region["id"]) for region in paragraph_regions},
+                )
+                if continuation is None:
+                    break
+                if cls._artifact_line_pattern.search(
+                    unicodedata.normalize("NFKC", cls._region_text(continuation))
+                ):
+                    break
+                paragraph_regions.append(continuation)
+                current = continuation
+
+            paragraph_evidence = [
+                cls._text_region_evidence(region) for region in paragraph_regions
+            ]
+            record["text_evidence"] = paragraph_evidence
+            record.setdefault("region_ids", []).extend(
+                str(region["id"]) for region in paragraph_regions
+            )
+            cls._complete_paragraph_measurements(
+                record=record,
+                paragraph_regions=paragraph_regions,
+            )
+            cls._complete_paragraph_figure_caption(
+                record=record,
+                paragraph_regions=paragraph_regions,
+            )
+
+    @classmethod
+    def complete_multiline_figure_caption_evidence(
+        cls,
+        *,
+        records: list[dict[str, Any]],
+        regions: list[dict[str, Any]],
+        region_by_id: dict[str, dict[str, Any]],
+    ) -> None:
+        """Attach wrapped OCR continuation lines until a visual reference is closed."""
+
+        text_regions_by_page: dict[int, list[dict[str, Any]]] = {}
+        for region in regions:
+            page = region.get("page")
+            if (
+                region.get("kind") == "text"
+                and isinstance(page, int)
+                and cls._is_bbox(region.get("bbox"))
+                and cls._region_text(region)
+            ):
+                text_regions_by_page.setdefault(page, []).append(region)
+
+        for page_regions in text_regions_by_page.values():
+            page_regions.sort(
+                key=lambda region: (
+                    float(region["bbox"][1]),
+                    float(region["bbox"][0]),
+                )
+            )
+
+        for record in records:
+            fields = record.get("fields", {})
+            if not isinstance(fields, dict):
+                continue
+            caption_field = fields.get("figure_caption")
+            if not isinstance(caption_field, dict):
+                continue
+            caption_evidence = caption_field.setdefault("evidence", [])
+            if not isinstance(caption_evidence, list):
+                continue
+
+            anchor_evidence = next(
+                (
+                    evidence
+                    for evidence in caption_evidence
+                    if isinstance(evidence, dict) and evidence.get("region_id") in region_by_id
+                ),
+                None,
+            )
+            if anchor_evidence is None:
+                artifact_field = fields.get("artifact_id", {})
+                artifact_evidence = (
+                    artifact_field.get("evidence", [])
+                    if isinstance(artifact_field, dict)
+                    else []
+                )
+                anchor_evidence = next(
+                    (
+                        evidence
+                        for evidence in artifact_evidence
+                        if isinstance(evidence, dict) and evidence.get("region_id") in region_by_id
+                    ),
+                    None,
+                )
+            if anchor_evidence is None:
+                continue
+
+            anchor = region_by_id.get(str(anchor_evidence.get("region_id")))
+            if (
+                not isinstance(anchor, dict)
+                or anchor.get("kind") != "text"
+                or not cls._is_bbox(anchor.get("bbox"))
+            ):
+                continue
+            anchor_text = cls._region_text(anchor)
+            balance = cls._parenthesis_balance(anchor_text)
+            if balance <= 0:
+                continue
+
+            page = anchor.get("page")
+            page_regions = text_regions_by_page.get(page, [])
+            continuation_regions: list[dict[str, Any]] = []
+            combined_text = anchor_text
+            current = anchor
+            for _ in range(3):
+                continuation = cls._next_wrapped_text_region(
+                    current=current,
+                    page_regions=page_regions,
+                    excluded_ids={
+                        str(anchor["id"]),
+                        *(str(region["id"]) for region in continuation_regions),
+                    },
+                )
+                if continuation is None:
+                    break
+                continuation_text = cls._region_text(continuation)
+                if cls._artifact_line_pattern.search(
+                    unicodedata.normalize("NFKC", continuation_text)
+                ):
+                    break
+                if not cls._visual_reference_pattern.search(
+                    unicodedata.normalize("NFKC", combined_text + continuation_text)
+                ):
+                    break
+                continuation_regions.append(continuation)
+                combined_text += continuation_text
+                balance += cls._parenthesis_balance(continuation_text)
+                current = continuation
+                if balance <= 0:
+                    break
+
+            if not continuation_regions or balance > 0:
+                continue
+            caption_match = cls._closed_visual_reference(combined_text)
+            if caption_match is None:
+                continue
+            raw_caption, normalized_caption = caption_match
+            existing_region_ids = {
+                str(evidence.get("region_id"))
+                for evidence in caption_evidence
+                if isinstance(evidence, dict) and evidence.get("region_id")
+            }
+            for continuation in continuation_regions:
+                continuation_id = str(continuation["id"])
+                if continuation_id in existing_region_ids:
+                    continue
+                caption_evidence.append(
+                    {
+                        "page": int(continuation["page"]),
+                        "quote": cls._region_text(continuation),
+                        "bbox": continuation["bbox"],
+                        "region_id": continuation_id,
+                        "kind": "text",
+                        "relation_ids": [],
+                        "linked_region_ids": [],
+                        "image_id": continuation.get("image_id"),
+                        "crop_object_key": continuation.get("crop_object_key"),
+                        "confidence": continuation.get("confidence"),
+                        "source": continuation.get("source", "unknown"),
+                    }
+                )
+                existing_region_ids.add(continuation_id)
+                record.setdefault("region_ids", []).append(continuation_id)
+
+            caption_field["raw_value"] = raw_caption
+            caption_field["value"] = normalized_caption
+            if caption_field.get("status") == "missing":
+                caption_field["status"] = "valid"
+            hints = record.setdefault("link_hints", {})
+            if isinstance(hints, dict):
+                hints["caption_texts"] = list(
+                    dict.fromkeys([*hints.get("caption_texts", []), normalized_caption])
+                )
+
+    @classmethod
+    def _next_wrapped_text_region(
+        cls,
+        *,
+        current: dict[str, Any],
+        page_regions: list[dict[str, Any]],
+        excluded_ids: set[str],
+    ) -> dict[str, Any] | None:
+        current_bbox = current["bbox"]
+        current_height = max(0.001, float(current_bbox[3]) - float(current_bbox[1]))
+        candidates: list[tuple[float, float, dict[str, Any]]] = []
+        for region in page_regions:
+            if str(region["id"]) in excluded_ids:
+                continue
+            bbox = region["bbox"]
+            vertical_gap = float(bbox[1]) - float(current_bbox[3])
+            if vertical_gap < -0.003 or vertical_gap > max(0.018, current_height * 1.25):
+                continue
+            horizontal_overlap = max(
+                0.0,
+                min(float(current_bbox[2]), float(bbox[2]))
+                - max(float(current_bbox[0]), float(bbox[0])),
+            )
+            candidate_width = max(0.001, float(bbox[2]) - float(bbox[0]))
+            overlap_ratio = horizontal_overlap / candidate_width
+            left_delta = abs(float(bbox[0]) - float(current_bbox[0]))
+            if overlap_ratio < 0.15 and left_delta > 0.12:
+                continue
+            candidates.append((vertical_gap, -overlap_ratio, region))
+        return min(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
+
+    @staticmethod
+    def _parenthesis_balance(value: str) -> int:
+        normalized = unicodedata.normalize("NFKC", value)
+        return normalized.count("(") - normalized.count(")")
+
+    @classmethod
+    def _closed_visual_reference(cls, value: str) -> tuple[str, str] | None:
+        matches = list(
+            re.finditer(
+                r"[（(]([^()（）]*(?:图|彩版|图版|fig(?:ure)?|plate)[^()（）]*)[）)]",
+                value,
+                flags=re.IGNORECASE,
+            )
+        )
+        if not matches:
+            return None
+        match = matches[-1]
+        normalized = unicodedata.normalize("NFKC", match.group(1)).strip()
+        return match.group(0).strip(), normalized
+
+    @classmethod
+    def _region_artifact_identifier(cls, region: dict[str, Any]) -> str:
+        match = cls._artifact_line_pattern.search(
+            unicodedata.normalize("NFKC", cls._region_text(region))
+        )
+        return cls._normalize_artifact_identifier(match.group(0) if match else "")
+
+    @staticmethod
+    def _normalize_artifact_identifier(value: Any) -> str:
+        return re.sub(
+            r"\s+",
+            "",
+            unicodedata.normalize("NFKC", str(value or "")).upper(),
+        )
+
+    @classmethod
+    def _text_region_evidence(cls, region: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "page": int(region["page"]),
+            "quote": cls._region_text(region),
+            "bbox": region["bbox"],
+            "region_id": str(region["id"]),
+            "kind": "text",
+            "relation_ids": [],
+            "linked_region_ids": [],
+            "image_id": region.get("image_id"),
+            "crop_object_key": region.get("crop_object_key"),
+            "confidence": region.get("confidence"),
+            "source": region.get("source", "unknown"),
+        }
+
+    @classmethod
+    def _complete_paragraph_measurements(
+        cls,
+        *,
+        record: dict[str, Any],
+        paragraph_regions: list[dict[str, Any]],
+    ) -> None:
+        fields = record.get("fields", {})
+        measurement_field = fields.get("measurements") if isinstance(fields, dict) else None
+        if not isinstance(measurement_field, dict):
+            return
+
+        region_matches = [
+            (region, list(cls._measurement_value_pattern.finditer(cls._region_text(region))))
+            for region in paragraph_regions
+        ]
+        matches = [
+            match
+            for _, current_matches in region_matches
+            for match in current_matches
+        ]
+        explicit_units = [match.group("unit") for match in matches if match.group("unit")]
+        if not matches or not explicit_units:
+            return
+        shared_unit = cls._normalize_measurement_unit(explicit_units[-1])
+        normalized_values = []
+        raw_values = []
+        for match in matches:
+            unit = cls._normalize_measurement_unit(match.group("unit") or shared_unit)
+            approx = "约" if match.group("approx") else ""
+            normalized_values.append(
+                f"{match.group('label')} {approx}{match.group('value')} {unit}".strip()
+            )
+            raw_values.append(match.group(0).strip())
+
+        measurement_field["raw_value"] = "、".join(raw_values)
+        measurement_field["value"] = "；".join(normalized_values)
+        if measurement_field.get("status") == "missing":
+            measurement_field["status"] = "valid"
+        evidence = measurement_field.setdefault("evidence", [])
+        if not isinstance(evidence, list):
+            return
+        existing_region_ids = {
+            str(item.get("region_id"))
+            for item in evidence
+            if isinstance(item, dict) and item.get("region_id")
+        }
+        for region, current_matches in region_matches:
+            region_id = str(region["id"])
+            if not current_matches or region_id in existing_region_ids:
+                continue
+            item = cls._text_region_evidence(region)
+            item["quote"] = "、".join(match.group(0).strip() for match in current_matches)
+            evidence.append(item)
+            existing_region_ids.add(region_id)
+
+    @classmethod
+    def _complete_paragraph_figure_caption(
+        cls,
+        *,
+        record: dict[str, Any],
+        paragraph_regions: list[dict[str, Any]],
+    ) -> None:
+        fields = record.get("fields", {})
+        caption_field = fields.get("figure_caption") if isinstance(fields, dict) else None
+        if not isinstance(caption_field, dict):
+            return
+        combined_text = "".join(cls._region_text(region) for region in paragraph_regions)
+        caption_match = cls._closed_visual_reference(combined_text)
+        if caption_match is None:
+            return
+        raw_caption, normalized_caption = caption_match
+        caption_field["raw_value"] = raw_caption
+        caption_field["value"] = normalized_caption
+        if caption_field.get("status") == "missing":
+            caption_field["status"] = "valid"
+        evidence = caption_field.setdefault("evidence", [])
+        if not isinstance(evidence, list):
+            return
+        existing_region_ids = {
+            str(item.get("region_id"))
+            for item in evidence
+            if isinstance(item, dict) and item.get("region_id")
+        }
+        for region in paragraph_regions:
+            region_id = str(region["id"])
+            if (
+                region_id in existing_region_ids
+                or not cls._visual_reference_pattern.search(cls._region_text(region))
+            ):
+                continue
+            evidence.append(cls._text_region_evidence(region))
+            existing_region_ids.add(region_id)
+        hints = record.setdefault("link_hints", {})
+        if isinstance(hints, dict):
+            hints["caption_texts"] = list(
+                dict.fromkeys([*hints.get("caption_texts", []), normalized_caption])
+            )
+
+    @staticmethod
+    def _normalize_measurement_unit(value: str) -> str:
+        return {
+            "厘米": "cm",
+            "毫米": "mm",
+            "米": "m",
+        }.get(value.casefold(), value.casefold())
 
     def _fuse_nearest_visual_regions(
         self,

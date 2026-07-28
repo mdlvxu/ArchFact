@@ -101,22 +101,18 @@ class VerificationService:
             return session, version, run
 
         if session.get("status") == "conflict_review":
-            unresolved = [
-                item
-                for item in session.get("items", [])
-                if item.get("consensus_status") == "conflict"
-                and not item.get("conflict_resolved")
-            ]
-            if unresolved:
-                raise ConflictError(f"还有 {len(unresolved)} 条人机冲突需要最终确认")
+            # Legacy sessions may still be stuck in conflict_review. Freeze using the
+            # existing human verdicts instead of requiring another pass on page 2.
             completed, version = await self._repository.finalize_verification_session(
                 job_id=job_id,
                 session_id=session_id,
             )
-            run = await self._repository.update_ai_verification_run(
-                session["ai_run_id"],
-                version_id=version["_id"],
-            )
+            run = None
+            if session.get("ai_run_id"):
+                run = await self._repository.update_ai_verification_run(
+                    session["ai_run_id"],
+                    version_id=version["_id"],
+                )
             return completed, version, run
 
         if session.get("status") == "ai_review":
@@ -237,18 +233,18 @@ class VerificationService:
             uncertain_count = sum(
                 result.get("ai_verdict") == "uncertain" for result in results.values()
             )
-            version = None
-            if conflict_count == 0:
-                updated_session, version = await self._repository.finalize_verification_session(
-                    job_id=run["job_id"],
-                    session_id=run["session_id"],
-                )
+            # Always freeze a version after AI review. Human PASS/FAIL remains authoritative;
+            # conflicts are retained in the version report instead of blocking navigation.
+            updated_session, version = await self._repository.finalize_verification_session(
+                job_id=run["job_id"],
+                session_id=run["session_id"],
+            )
             await self._repository.update_ai_verification_run(
                 run_id,
                 status="completed",
                 conflict_count=conflict_count,
                 uncertain_count=uncertain_count,
-                version_id=version["_id"] if version else None,
+                version_id=version["_id"],
                 completed_at=utc_now(),
                 progress={"current": total, "total": total, "percent": 100},
             )
@@ -424,6 +420,12 @@ class VerificationService:
             "temperature": 0,
             "max_tokens": self._settings.verification_llm_max_tokens,
         }
+        # Match extraction: DeepSeek thinking models otherwise burn tokens on
+        # reasoning and leave message.content empty, which blocks V-version creation.
+        if self._settings.llm_provider.lower() == "deepseek":
+            payload["thinking"] = {
+                "type": "enabled" if self._settings.llm_thinking else "disabled"
+            }
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
@@ -435,8 +437,36 @@ class VerificationService:
         if not response.is_success:
             raise DomainError(f"AI 复核服务返回 HTTP {response.status_code}: {response.text[:300]}")
         data = response.json()
-        return parse_json_object(data["choices"][0]["message"]["content"])
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise DomainError("AI 复核服务未返回 choices")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if not isinstance(message, dict):
+            raise DomainError("AI 复核服务返回的 message 无效")
+        content = self._message_text(message.get("content"))
+        if not content:
+            content = self._message_text(message.get("reasoning_content"))
+        if not content:
+            raise DomainError("AI 复核服务返回空内容，请检查模型与 thinking 配置")
+        return parse_json_object(content)
 
+    @staticmethod
+    def _message_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if text:
+                        parts.append(str(text))
+            return "".join(parts).strip()
+        return str(value).strip()
     @staticmethod
     def _record_artifact_id(record: dict[str, Any]) -> str:
         identity = record.get("linkage", {}).get("identity", {})

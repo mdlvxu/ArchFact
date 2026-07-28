@@ -319,11 +319,19 @@ class ModelRunView(BaseModel):
     error: str | None = None
 
 
+class FieldConflictCandidateView(BaseModel):
+    raw_value: Any = None
+    value: Any = None
+    evidence: list[EvidenceView] = Field(default_factory=list)
+    selected: bool = False
+
+
 class ExtractedFieldView(BaseModel):
     raw_value: Any = None
     value: Any = None
     status: Literal["valid", "missing", "needs_review"] = "valid"
     evidence: list[EvidenceView] = Field(default_factory=list)
+    conflict_candidates: list[FieldConflictCandidateView] = Field(default_factory=list)
 
 
 class RecordIdentityView(BaseModel):
@@ -375,6 +383,7 @@ class ExtractionRecordView(BaseModel):
     record_type: str
     source_pages: list[int]
     fields: dict[str, ExtractedFieldView]
+    text_evidence: list[EvidenceView] = Field(default_factory=list)
     linkage: SystemLinkageView = Field(default_factory=SystemLinkageView)
     link_hints: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)

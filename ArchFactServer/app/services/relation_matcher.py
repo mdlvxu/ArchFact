@@ -59,7 +59,7 @@ class RelationMatcherConfig:
 class RelationMatcher:
     provider = "archfact"
     model = "group-aware-region-matcher"
-    version = "5"
+    version = "6"
     _containable_kinds = {
         "artifact",
         "number",
@@ -140,6 +140,7 @@ class RelationMatcher:
                     )
                 )
 
+            scoped_relations: list[dict[str, Any]] = []
             for caption in captions:
                 caption_id = str(caption["id"])
                 bucket_numbers = [
@@ -159,7 +160,7 @@ class RelationMatcher:
                     )
                     else "caption_constrained_assignment"
                 )
-                relations.extend(
+                scoped_relations.extend(
                     self._match_number_artifacts(
                         job_id=job_id,
                         numbers=bucket_numbers,
@@ -167,11 +168,46 @@ class RelationMatcher:
                         method=assignment_method,
                     )
                 )
+            relations.extend(scoped_relations)
 
             assigned_number_ids = set(caption_by_region) & {str(number["id"]) for number in numbers}
             assigned_artifact_ids = set(caption_by_region) & {
                 str(artifact["id"]) for artifact in artifacts
             }
+            matched_number_ids = {
+                str(relation["source_region_id"]) for relation in scoped_relations
+            }
+            matched_artifact_ids = {
+                str(relation["target_region_id"]) for relation in scoped_relations
+            }
+
+            # OCR can place a number inside a broad caption scope while the artifact
+            # beside it falls a few pixels outside that scope. Previously the scoped
+            # number was then excluded from every later matching pass, even when it
+            # was geometrically inside the correct artifact (for example M13:9).
+            scope_orphan_numbers = [
+                number
+                for number in numbers
+                if str(number["id"]) in assigned_number_ids
+                and str(number["id"]) not in matched_number_ids
+            ]
+            unscoped_artifacts = [
+                artifact
+                for artifact in artifacts
+                if str(artifact["id"]) not in assigned_artifact_ids
+                and str(artifact["id"]) not in matched_artifact_ids
+            ]
+            scope_fallback_relations = self._match_number_artifacts(
+                job_id=job_id,
+                numbers=scope_orphan_numbers,
+                artifacts=unscoped_artifacts,
+                method="directional_assignment_caption_scope_fallback",
+            )
+            relations.extend(scope_fallback_relations)
+            matched_artifact_ids.update(
+                str(relation["target_region_id"]) for relation in scope_fallback_relations
+            )
+
             unassigned_numbers = [
                 number for number in numbers if str(number["id"]) not in assigned_number_ids
             ]
@@ -179,6 +215,7 @@ class RelationMatcher:
                 artifact
                 for artifact in artifacts
                 if str(artifact["id"]) not in assigned_artifact_ids
+                and str(artifact["id"]) not in matched_artifact_ids
             ]
             relations.extend(
                 self._match_number_artifacts(

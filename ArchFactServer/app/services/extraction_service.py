@@ -1309,7 +1309,7 @@ class ExtractionService:
         schema_hash = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         payload = {
-            "cache_version": "semantic-compact-v1",
+            "cache_version": "semantic-compact-v2",
             "document_sha256": document_sha256,
             "page_no": int(page_no),
             "text_hash": text_hash,

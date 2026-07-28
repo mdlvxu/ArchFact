@@ -21,6 +21,7 @@ import {
   getVerificationSessionRecords,
   getVerificationSession,
   getUploadedDocument,
+  renderDocumentPage,
   rebindRegionRelation,
   retryFailedExtractionPages,
   updateRegionRelationReview,
@@ -137,9 +138,15 @@ const pagePreviewUrls = computed<Record<number, string>>(() => ({
   ...evidencePagePreviewUrls.value,
 }))
 
-const previewCatalogRecords = computed(() =>
-  previewMode.value === 'verify' ? verificationRecords.value : extractionRecords.value,
-)
+const previewCatalogRecords = computed(() => {
+  const records =
+    previewMode.value === 'verify' ? verificationRecords.value : extractionRecords.value
+  const completedRecord = recordEvidenceContext.value?.record
+  if (!completedRecord) return records
+  return records.map((record) => (
+    record.id === completedRecord.id ? completedRecord : record
+  ))
+})
 
 const verificationReviewStatuses = computed<
   Record<string, ExtractionRecord['review_status']>
@@ -227,7 +234,16 @@ watch(
   previewAnnotations,
   (annotations) => {
     if (!annotations.some((annotation) => annotation.id === activeAnnotationId.value)) {
-      activeAnnotationId.value = annotations[0]?.id ?? ''
+      activeAnnotationId.value =
+        annotations.find(
+          (annotation) => annotation.kind === 'text' && annotation.fieldKey === 'artifact_id',
+        )?.id ??
+        annotations.find(
+          (annotation) =>
+            annotation.kind === 'text' && annotation.fieldKey !== 'figure_caption',
+        )?.id ??
+        annotations[0]?.id ??
+        ''
     }
   },
   { immediate: true },
@@ -517,7 +533,13 @@ async function renderSelectedPage(pageNumber: number) {
 
   try {
     if (!document) {
-      const restoredUrl = pagePreviewUrls.value[pageNumber]
+      let restoredUrl = pagePreviewUrls.value[pageNumber]
+      if (!restoredUrl && serverDocumentId.value) {
+        const image = await renderDocumentPage(serverDocumentId.value, pageNumber)
+        restoredUrl = getDocumentImageContentUrl(serverDocumentId.value, image.image_id)
+        const item = pdfPages.value.find((candidate) => candidate.page === pageNumber)
+        if (item) item.thumbnailUrl = restoredUrl
+      }
       if (!restoredUrl) throw new Error('当前页面预览图尚未生成')
       if (requestId === previewRequestId) previewUrl.value = restoredUrl
       return
@@ -722,6 +744,8 @@ async function completeCurrentVerification() {
       verificationSession.value.id,
     )
     verificationSession.value = result.session
+    let versionLabel = result.version?.version ?? result.session.target_version
+    let conflictCount = 0
     if (!result.version && result.ai_run) {
       verificationAiRun.value = result.ai_run
       ElMessage.info(t('verification.aiStarted'))
@@ -738,25 +762,22 @@ async function completeCurrentVerification() {
         currentJobId.value,
         verificationSession.value.id,
       )
-      if (!run.version_id) {
-        const conflicts = verificationSession.value.items.filter(
-          (item) => item.consensus_status === 'conflict' && !item.conflict_resolved,
-        )
-        ElMessage.warning(t('verification.aiConflicts', { count: conflicts.length }))
-        const firstConflict = conflicts[0]
-        if (firstConflict) {
-          const record = verificationRecords.value.find(
-            (item) => item.id === firstConflict.record_id,
-          )
-          if (record) await selectCatalogRecord(record)
-        }
-        return
+      conflictCount = run.conflict_count ?? verificationSession.value.items.filter(
+        (item) => item.consensus_status === 'conflict',
+      ).length
+      versionLabel = verificationSession.value.target_version
+      if (!run.version_id && !verificationSession.value.version_id) {
+        throw new Error(t('verification.aiFailed'))
       }
-      ElMessage.success(
-        t('verification.completed', { version: verificationSession.value.target_version }),
-      )
-    } else if (result.version) {
-      ElMessage.success(t('verification.completed', { version: result.version.version }))
+    } else if (!result.version) {
+      throw new Error(t('verification.aiFailed'))
+    } else {
+      conflictCount = result.version.report.conflict_count ?? 0
+    }
+
+    ElMessage.success(t('verification.completed', { version: versionLabel }))
+    if (conflictCount > 0) {
+      ElMessage.warning(t('verification.aiConflictsRecorded', { count: conflictCount }))
     }
     previewMode.value = 'browse'
     verificationSession.value = null
@@ -764,6 +785,7 @@ async function completeCurrentVerification() {
     verificationRecords.value = []
     clearPreviewSelection()
     activeTab.value = 'Machine Verification'
+    await nextTick()
     await nextTick()
     await machineVerificationRef.value?.refreshVersions()
   } catch (error: unknown) {
@@ -848,7 +870,14 @@ async function renderThumbnail(pageNumber: number) {
   item.loading = true
 
   try {
-    const imageUrl = await renderPdfPage(pageNumber, 0.24, 0.72, document)
+    const imageUrl = document
+      ? await renderPdfPage(pageNumber, 0.24, 0.72, document)
+      : serverDocumentId.value
+        ? getDocumentImageContentUrl(
+            serverDocumentId.value,
+            (await renderDocumentPage(serverDocumentId.value, pageNumber)).image_id,
+          )
+        : ''
     if (documentVersion === pdfDocumentVersion && pdfPages.value.includes(item)) {
       item.thumbnailUrl = imageUrl
     }
@@ -858,6 +887,15 @@ async function renderThumbnail(pageNumber: number) {
     item.loading = false
     renderingThumbnails.delete(renderKey)
   }
+}
+
+/** 从全文压缩图定位到当前器物的一条跨页证据。 */
+function selectOverviewAnnotation(pageNumber: number, annotationId: string) {
+  previewSelectedPage.value = pageNumber
+  activePage.value = pageNumber
+  activeAnnotationId.value = annotationId
+  void renderThumbnail(pageNumber)
+  void renderSelectedPage(pageNumber)
 }
 
 /** 读取本地 PDF，初始化页码列表并优先渲染第一页 */
@@ -988,9 +1026,12 @@ async function restoreLatestExtractionResult() {
         .filter((image) => image.image_type === 'page_render')
         .map((image) => [image.page_no, image]),
     )
-    const pageNumbers = extractionTaskPages.value.length
+    const discoveredPageNumbers = extractionTaskPages.value.length
       ? extractionTaskPages.value
       : [...new Set(records.flatMap((record) => record.source_pages))].sort((a, b) => a - b)
+    const pageNumbers = documentInfo.page_count
+      ? Array.from({ length: documentInfo.page_count }, (_, index) => index + 1)
+      : discoveredPageNumbers
 
     pdfFileName.value = documentInfo.filename
     pdfPages.value = pageNumbers.map((page) => {
@@ -1160,11 +1201,15 @@ onBeforeUnmount(() => {
       />
 
       <PdfOverview
-        v-if="previewSelectedPage !== null"
-        :pages="extractedPdfPages"
-        :active-page="previewSelectedPage"
+        :pages="pdfPages"
+        :active-page="previewSelectedPage ?? 0"
         :total="pdfPages.length"
+        :annotations="evidenceContextAnnotations"
+        :relations="previewRelations"
+        :active-annotation-id="activeAnnotationId"
+        :selected-record-id="selectedRecordId"
         @select="selectPreviewPage"
+        @select-annotation="selectOverviewAnnotation"
         @thumbnail-needed="renderThumbnail"
       />
 
@@ -1370,7 +1415,7 @@ onBeforeUnmount(() => {
 
 .preview-workspace {
   display: grid;
-  grid-template-columns: 150px minmax(480px, 1fr) minmax(350px, 420px);
+  grid-template-columns: 150px 92px minmax(480px, 1fr) minmax(350px, 420px);
   gap: 12px;
   height: calc(100vh - 113px);
   min-height: 0;
@@ -1400,7 +1445,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1180px) {
   .preview-workspace {
-    grid-template-columns: 130px minmax(420px, 1fr);
+    grid-template-columns: 130px 82px minmax(420px, 1fr);
     grid-template-rows: minmax(620px, 1fr) 680px;
     height: calc(100vh - 113px);
     overflow: auto;
@@ -1475,7 +1520,8 @@ onBeforeUnmount(() => {
     overflow: auto;
   }
 
-  .preview-workspace > :first-child {
+  .preview-workspace > :first-child,
+  .preview-workspace > :nth-child(2) {
     display: none;
   }
 
