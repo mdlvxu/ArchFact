@@ -138,7 +138,7 @@ Set-Location ..\ArchFactServer
 ## 四、页面二：数据预览（浏览核对）
 **目的：** 在 PDF 与结构化目录之间对照查看抽取结果，检查文本证据、器物线图、YOLO 裁剪图、彩版关联等。  
 <!-- 这是一张图片，ocr 内容为： -->
-![](C:\Users\dell\Pictures\Screenshots\ArchFact\数据预览页中文.png)
+![](ArchFactClient/docs/readme-images/data-preview-zh.png)
 
 <!-- 这是一张图片，ocr 内容为：不 LOCALHOST:5173 已书停 品口资源口大模型口大模型口 快捷登录 所有书签 ARCHFACT 机器校验 数据预览 数据提取 良洁造址解考古报告之五:文家山(浙江省文物考古研.. ,160/275 考古目录 页面导航 全部字段 内容预览 D  按字 文字工具 美联工具 绘制工具 E敏小 电 放大 第160页100% 良活遗址群考古报告... 类别:玉珠 王新绑定 EVIDENCE FOR 驳回 通过 置信度100%  未市核 质地:白色闪玉 尺寸:高1.1.1.CM 160 器物评倩 青乐色 西湖 尺寸 吉黑色得岩 160/275 关联的网店 161 石砂 完整嘉 经济 文木证据 器物杭州国 形态指述 162 161/275 关联页面 第160页 网注 彩色国板 文本证据 163 M13:12 霄无关联彩图 M13:12 类别:石钱 MEIM 质地:青玉色泥岩 尺寸:制作精细 162/275 第161页.14 第160页24 第161页3/4 -->
 ![中文图片](https://cdn.nlark.com/yuque/0/2026/png/25963717/1785140964662-85cf5de7-a6cc-43ea-9541-f04513341653.png)
@@ -196,7 +196,7 @@ Set-Location ..\ArchFactServer
 ## 六、人工核验 18 条样本
 **目的：** 对固定样本逐条给出人工 **通过 / 不通过**，为后续 AI 复核与版本冻结提供人审结论。  
 <!-- 这是一张图片，ocr 内容为： -->
-![](C:\Users\dell\Pictures\Screenshots\ArchFact\数据预览页-审核页面中文.png)
+![](ArchFactClient/docs/readme-images/data-preview-review-zh.png)
 
 <!-- 这是一张图片，ocr 内容为：已哲停 LOCALHOST:5173 品 快捷登录 大模型 资源 ARCHFACT 完成核验还剩13条 中中EN 机器校验 数据提取 数据预览 P...161/275 良活遗址群考古报告之五:文家山(浙江省文物考古研... 考古目录 页面导航 内容预览 P  捷泰 全部字段 关职工具 绘制工具 电放大 第161页:100% 良清遗址群考古报告.. CAPTION OF 投回 置信度90%未市校 通过 王新绑定 通过 不通过 审核面板 GW幸福限司 160 器物靓剪图 M13.20 ARFFACT LD 自口 送6.8   0.7 五地 民寸 160/275 161 工业形饰 类别 光经验 YOLO 检测到的册... 新面三网形,制作规控总部组长中前空孔 形本批合 162 161/275 关联页面 第161页 图庄 彩色图板 (图3-148元49.6) 163 M13:20 来申核 M13:20 区新金属 类别:五维形饰 质地:闪玉 尺寸:长6.6.6.7.7CM 162/275 第161页-14 第161页:314 第161页.214 -->
 ![中文图片](https://cdn.nlark.com/yuque/0/2026/png/25963717/1785141389071-931d4350-038c-45cb-b29f-96b90c4de9ba.png)
@@ -223,7 +223,7 @@ Set-Location ..\ArchFactServer
 
   
 <!-- 这是一张图片，ocr 内容为： -->
-![](C:\Users\dell\Pictures\Screenshots\ArchFact\数据预览页-审核页面（完成核验）中文.png)  
+![](ArchFactClient/docs/readme-images/data-preview-review-completed-zh.png)  
 点击后将启动 DeepSeek AI 复核（不会改写生产抽取记录，只做人机对照）。
 
 ---
@@ -231,7 +231,7 @@ Set-Location ..\ArchFactServer
 ## 七、AI 复核进行中
 **目的：** 大模型对照自动结果、OCR 证据与金标准（若已绑定），给出 AI 结论并与人工结论比对。  
 <!-- 这是一张图片，ocr 内容为： -->
-![](C:\Users\dell\Pictures\Screenshots\ArchFact\数据预览页-审核页面（AI复核中）中文.png)
+![](ArchFactClient/docs/readme-images/data-preview-ai-reviewing-zh.png)
 
 <!-- 这是一张图片，ocr 内容为：已哲停 LOCALHOST:5173 品 快捷登录 大模型 资源 ARCHFACT 并AI复核44% @中EN 机器校验 数据提取 数据预览 P...164/275 良活遗址群考古报告之五:文家山(浙江省文物考古研... 考古目录 页面导航 内容预览 P 提承 全部字段 0缩小 关联工具 文字工具 绘制工具 电放大 第164页:100% 良清遗址解老古报告 EVIDENCE FOR 驳回 置信度100%未市核 通过 王新绑定 M16:18 类别:第167页 文本证据 162 版62.2 类别:第170页 160/275 163 M1:3 类别:型 质地:闪玉 尺寸:直径 19.4 CM YOLO 检测到的涨.... 161/275 M16:10 关联页面 第164页 类别:玉管 质地:白色闪玉 彩色图板 尺寸:离1.9CM.直径0.8CM 165 图3-15AM14平,剖面图 1,3. 15.16.玉管2玉隧孔珠4-11,18.王 BI 珠12,13.陶豆14.购17.玉维形饰 类别:第 185 万 162/275 第162页:2/4 第163页.1A 第163页3/4 414 166 -->
 ![中文图片](https://cdn.nlark.com/yuque/0/2026/png/25963717/1785141614925-de3ffed9-d051-4006-be7b-3e468c61b72d.png)
@@ -263,4 +263,3 @@ Set-Location ..\ArchFactServer
 ![英文图片](https://cdn.nlark.com/yuque/0/2026/png/25963717/1785141732081-204bf890-d18b-41aa-94c9-d2943bfb4925.png)
 
 ---
-
