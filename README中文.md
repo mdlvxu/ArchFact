@@ -4,6 +4,14 @@
 
 ArchFact 是一个面向考古报告 PDF 的信息提取与人工核验平台。项目由 Vue 3 前端和 FastAPI 后端组成，使用 MongoDB/GridFS 保存业务数据和原始 PDF，并可选接入 PaddleOCR、YOLO 与大语言模型。
 
+**重要：后端需要自行配置模型与 API。** 完整抽取链路依赖本地 `.env`（可从 `ArchFactServer/.env.example` 复制）。具体启用哪些能力、对接哪个服务，请按实际环境选择，例如：
+
+- **大模型 API**（语义字段抽取、AI 复核）：如 DeepSeek（`LLM_PROVIDER` / `LLM_API_KEY` / `LLM_MODEL` 等）；也可换成兼容 OpenAI 协议的其他服务
+- **OCR**：如 PaddleOCR（`OCR_ADAPTER=paddle`，并配置独立 conda/`PADDLE_OCR_PYTHON`）
+- **YOLO 检测**：如本仓库考古模型（`YOLO_ADAPTER=ultralytics`，并准备 `models/archaeology-yolo/v1/best.pt`）
+
+未配置对应项时，相关能力会处于关闭或降级状态；密钥与权重请只放在本机，勿提交到公开仓库。详细步骤见 [SETUP_WINDOWS.md](SETUP_WINDOWS.md)。
+
 ## 项目结构
 
 ```text
@@ -25,7 +33,8 @@ ArchFact/
 
 ## 快速开始
 
-首次使用前，请按照 [SETUP_WINDOWS.md](SETUP_WINDOWS.md) 安装 Node.js、pnpm、Python 和 MongoDB，并创建本地 `.env`。
+首次使用前，请按照 [SETUP_WINDOWS.md](SETUP_WINDOWS.md) 安装 Node.js、pnpm、Python 和 MongoDB，并创建本地 `.env`。  
+至少应确认后端已按需配置大模型 API；若要跑完整双通道抽取，还需配置 OCR 与 YOLO（见上方简介）。
 
 完成一次环境配置后，在项目根目录双击：
 
