@@ -1,42 +1,44 @@
 # Changelog
 
+[English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
+
 ## quality-baseline-v2 — 2026-08-12
 
-相对 `quality-baseline-v1`（2026-07-28）的主要修改与优化。
+Main changes and improvements since `quality-baseline-v1` (2026-07-28).
 
-### 作业耗时
+### Job elapsed time
 
-- 任务完成时持久化 `completed_at`，前端优先用其计算「已用时间」
-- 避免 rematch/apply 刷新 `updated_at` 后把耗时算成上百小时
-- 启动时将僵死抽取任务标记为失败，并冻结完成时间
+- Persist `completed_at` when a job finishes; the UI prefers it when computing elapsed time
+- Avoid rematch/apply refreshing `updated_at` and inflating elapsed time to hundreds of hours
+- On startup, mark stale extraction jobs as failed and freeze their completion time
 
-### 器物卡片与文本证据
+### Artifact cards and text evidence
 
-- 段落补全升级（融合 v15→v16）：从 OCR 段落回填/升级类别、质地、形态描述
-- 短形态描述（如「片状」）在 OCR 更完整时自动升级
-- 测量字段避免吞入下一条器物编号；单位「厘米」跨行时正确拼接
-- 列表/证据接口可持久化段落补全结果（`paragraph_enrichment_version`）
-- 前端目录卡片优先展示形态描述，并可用 `text_evidence` 兜底
+- Paragraph enrichment upgrade (fusion v15→v16): backfill/upgrade category, texture, and morphological description from OCR paragraphs
+- Upgrade short morphology values (e.g. “片状”) when OCR evidence is richer
+- Keep measurement fields from swallowing the next artifact ID; attach units such as “厘米” when they wrap to the next line
+- List/evidence APIs can persist paragraph enrichment (`paragraph_enrichment_version`)
+- Catalog cards prefer morphology on the card and can fall back to `text_evidence`
 
-### 预览布局（彩图不占第一列）
+### Preview layout (color plates are not column 1)
 
-- 主文本页选择时排除彩图页（`page_type=color_plate` 或彩图 region）
-- 左侧预览列始终优先非彩图正文；彩图仅作为可选第三列关联
-- 前端增加 `preview-document-page` 安全兜底
+- Exclude color-plate pages when choosing the primary text page (`page_type=color_plate` or color-plate regions)
+- The left preview column always prefers non-color body text; color plates remain optional third-column links
+- Frontend `preview-document-page` helper as a safety net
 
-### 彩图注记 ≠ 目录正文（如 M4:3 / 仲M4:3）
+### Color-plate captions ≠ catalog body text (e.g. M4:3 / 仲M4:3)
 
-- **不以彩图页 OCR 作为文本证据**；彩图仅作关联
-- 吸收/丢弃空彩图注记卡（如 `4.玉锥形饰（仲M4：3）`），并入正文器物卡的关联信息
-- 编号归一化：剥离墓/单位前缀（`仲M4:3` → `M4:3`），实体链接一并处理
-- 目录侧过滤仅含编号/图注的彩图空卡，避免搜索出现多张空卡片
+- **Do not treat color-plate OCR as text evidence**; plates are for association only
+- Absorb/drop empty plate-caption cards (e.g. `4.玉锥形饰（仲M4：3）`) into the body-text artifact’s link metadata
+- Normalize IDs by stripping tomb/unit prefixes (`仲M4:3` → `M4:3`) in fusion and entity linking
+- Catalog UI hides caption-only empty plate cards so search does not show multiple empty hits
 
-### 测试
+### Tests
 
-- 新增/扩展：融合吸收彩图注记、实体前缀合并、证据上下文主文本页、目录空卡过滤等用例
+- Added/extended coverage for plate-caption absorption, tomb-prefix entity merge, primary text page selection, and catalog empty-card filtering
 
 ---
 
 ## quality-baseline-v1 — 2026-07-28
 
-首个质量基线：内容预览、PDF 导航、器物卡片联动、文本证据提取、彩图/图注关联与核验界面。详见各子项目 `BASELINE.md`。
+First quality baseline: content preview, PDF navigation, artifact card linking, text-evidence extraction, color-plate/caption association, and verification UI. See each app’s `BASELINE.md`.

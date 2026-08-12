@@ -16,7 +16,7 @@ If a component is not configured, that capability stays disabled or degraded. Ke
 
 - Current tag: [`quality-baseline-v2`](https://github.com/mdlvxu/ArchFact/releases/tag/quality-baseline-v2) (2026-08-12)
 - Previous: `quality-baseline-v1` (2026-07-28)
-- Release notes: [CHANGELOG.md](./CHANGELOG.md)
+- Release notes: [CHANGELOG.md](./CHANGELOG.md) (English) · [CHANGELOG中文.md](./CHANGELOG中文.md) (中文)
 - App notes: `ArchFactClient/BASELINE.md`, `ArchFactServer/BASELINE.md`
 
 ## Project layout

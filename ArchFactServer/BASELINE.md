@@ -11,7 +11,7 @@
 该基线固定当前 PDF 解析、OCR/YOLO 区域处理、器物关系匹配、文本证据段落补全、
 彩图与图注**仅关联**、人工核验及质量评估能力。融合服务版本为 `result_fusion` v16。
 
-相对 v1 的主要优化见仓库根目录 [CHANGELOG.md](../CHANGELOG.md)。
+相对 v1 的主要优化见仓库根目录 [CHANGELOG中文.md](../CHANGELOG中文.md) / [CHANGELOG.md](../CHANGELOG.md)。
 
 本地环境变量、MongoDB 与文件运行数据、日志、Python 虚拟环境、缓存、
 Ultralytics 本机配置和模型权重不属于代码基线。
