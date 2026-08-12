@@ -121,6 +121,8 @@ export interface ExtractionJob {
   created_at: string
   updated_at: string
   attempt_started_at?: string | null
+  /** Extraction finish time. Prefer this over updated_at for elapsed metrics. */
+  completed_at?: string | null
   events: ExtractionJobEvent[]
 }
 
@@ -258,6 +260,10 @@ export interface SourceRegion {
   ocr_model?: string | null
   ocr_version?: string | null
   ocr_model_run_id?: string | null
+  approximate?: boolean
+  geometry_type?: string | null
+  match_key?: string | null
+  match_reason?: string | null
   ocr_error?: string | null
 }
 
@@ -300,6 +306,8 @@ export interface PageAnnotations {
 
 export interface RecordEvidenceContext {
   record: ExtractionRecord
+  text_record: ExtractionRecord
+  primary_text_page: number
   entity?: ArtifactEntity | null
   page_numbers: number[]
   regions: SourceRegion[]

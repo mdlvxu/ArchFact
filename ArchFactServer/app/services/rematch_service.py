@@ -6,6 +6,7 @@ from app.infrastructure.task_dispatcher import LocalJobDispatcher
 from app.models.schemas import ExtractionConfig, RematchCreate
 from app.repositories.mongo_repository import MongoRepository, utc_now
 from app.services.artifact_entity_linker import ArtifactEntityLinker
+from app.services.page_discovery import PageDiscoveryService
 from app.services.relation_matcher import RelationMatcher
 from app.services.result_fusion import ResultFusionService
 
@@ -50,7 +51,19 @@ class RematchService:
                 completed_at=utc_now(),
                 progress={"current": 0, "total": 0, "percent": 0, "stage": "cancelled"},
             )
-        return await self._repository.get_rematch_run(job_id, rematch_id)
+        current = await self._repository.get_rematch_run(job_id, rematch_id)
+        if current.get("status") in {"completed", "applied", "failed", "cancelled"}:
+            return current
+        # The local dispatcher loses its in-memory task table after a service
+        # restart. If no task exists in this process, the persisted run is stale
+        # and can be finalized safely instead of blocking every future rematch.
+        return await self._repository.update_rematch_run(
+            rematch_id,
+            status="cancelled",
+            cancel_requested=True,
+            completed_at=utc_now(),
+            progress={"current": 0, "total": 0, "percent": 0, "stage": "cancelled"},
+        )
 
     async def apply(self, job_id: str, rematch_id: str) -> dict[str, Any]:
         return await self._repository.apply_rematch_snapshot(
@@ -69,8 +82,17 @@ class RematchService:
             records_raw = await self._repository.list_job_records(job_id)
             relations_raw = await self._repository.list_job_relations(job_id)
             entities_raw = await self._repository.list_job_entities(job_id)
+            page_index_raw = await self._repository.list_document_page_index(
+                document_id=str(job["document_id"]),
+                index_version=PageDiscoveryService.version,
+            )
             regions = [self._domain_item(region) for region in regions_raw]
             records = [self._clean_record(record) for record in records_raw]
+            page_metadata = {
+                int(page["page_no"]): self._domain_item(page)
+                for page in page_index_raw
+                if isinstance(page.get("page_no"), int)
+            }
             pages = sorted({int(region.get("page", 0)) for region in regions if region.get("page")})
             total_steps = max(len(pages) + 2, 1)
             await self._repository.update_rematch_run(
@@ -160,6 +182,7 @@ class RematchService:
                 relations=relations,
                 config=config,
                 model_run_id=fusion_run_id,
+                page_metadata=page_metadata,
             )
             records = fusion_output.records
             relations = fusion_output.relations
@@ -206,6 +229,18 @@ class RematchService:
                 candidate_relations=relations,
                 candidate_records=records,
                 candidate_entities=entities,
+                baseline_inferred_regions=[
+                    self._domain_item(region)
+                    for region in regions_raw
+                    if region.get("source") == "ocr_identifier_inference"
+                    and region.get("kind") == "color_plate"
+                ],
+                candidate_inferred_regions=[
+                    copy.deepcopy(region)
+                    for region in regions
+                    if region.get("source") == "ocr_identifier_inference"
+                    and region.get("kind") == "color_plate"
+                ],
                 report=report,
             )
             if run.get("apply_immediately"):

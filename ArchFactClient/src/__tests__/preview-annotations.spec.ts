@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildPreviewAnnotations } from '@/domain/preview-annotations'
+import {
+  buildPreviewAnnotations,
+  ensureSelectedPrimaryArtifactAnnotation,
+} from '@/domain/preview-annotations'
 import type { ExtractionRecord, PageAnnotations } from '@/types/extraction'
 
 const record: ExtractionRecord = {
@@ -330,6 +333,84 @@ describe('buildPreviewAnnotations', () => {
     expect(annotations.find((item) => item.regionId === 'artifact-m3-11')?.primaryArtifact).toBe(false)
   })
 
+  it('keeps the selected card crop when body text comes from a sibling record', () => {
+    const textRecord: ExtractionRecord = {
+      ...record,
+      id: 'body-text-record',
+      fields: {
+        artifact_id: {
+          raw_value: 'M1:19',
+          value: 'M1:19',
+          status: 'valid',
+          evidence: [
+            {
+              page: 132,
+              quote: 'M1:19',
+              bbox: [0.2, 0.4, 0.4, 0.45],
+              region_id: 'body-text-region',
+              kind: 'text',
+              relation_ids: [],
+              linked_region_ids: [],
+            },
+          ],
+        },
+      },
+      region_ids: ['body-text-region'],
+      primary_artifact_region_id: undefined,
+      thumbnail_region_id: undefined,
+    }
+    const selectedRecord: ExtractionRecord = {
+      ...record,
+      id: 'selected-card-record',
+      fields: textRecord.fields,
+      region_ids: ['selected-artifact-region'],
+      primary_artifact_region_id: 'selected-artifact-region',
+      thumbnail_region_id: 'selected-artifact-region',
+    }
+    const data: PageAnnotations = {
+      page: 132,
+      regions: [
+        {
+          ...annotationData.regions[0]!,
+          id: 'body-text-region',
+          page: 132,
+          kind: 'text',
+        },
+        {
+          ...annotationData.regions[0]!,
+          id: 'selected-artifact-region',
+          page: 126,
+          kind: 'artifact',
+          crop_object_key: 'pages/126/m1-19.png',
+        },
+      ],
+      relations: [],
+      records: [selectedRecord],
+    }
+    const textAnnotations = buildPreviewAnnotations([textRecord], data, 132)
+
+    const annotations = ensureSelectedPrimaryArtifactAnnotation(
+      textAnnotations,
+      selectedRecord,
+      data,
+      (regionId) => `/crop/${regionId}`,
+    )
+
+    expect(annotations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        regionId: 'body-text-region',
+        kind: 'text',
+      }),
+      expect.objectContaining({
+        regionId: 'selected-artifact-region',
+        recordId: 'selected-card-record',
+        kind: 'line_drawing',
+        cropUrl: '/crop/selected-artifact-region',
+        primaryArtifact: true,
+      }),
+    ]))
+  })
+
   it('derives the primary artifact from the exact sequence edge for an older response', () => {
     const legacyRecord: ExtractionRecord = {
       ...record,
@@ -378,5 +459,47 @@ describe('buildPreviewAnnotations', () => {
 
     expect(annotations.find((item) => item.regionId === 'artifact-m3-7')?.primaryArtifact).toBe(true)
     expect(annotations.find((item) => item.regionId === 'artifact-m3-5')?.primaryArtifact).toBe(false)
+  })
+
+  it('resolves page visuals via primary/thumbnail when region_ids stay page-local', () => {
+    const textSibling: ExtractionRecord = {
+      ...record,
+      id: 'text-sibling',
+      entity_id: 'ent-m3-4',
+      source_pages: [46],
+      fields: {},
+      region_ids: ['text-46'],
+    }
+    const drawingSibling: ExtractionRecord = {
+      ...record,
+      id: 'drawing-sibling',
+      entity_id: 'ent-m3-4',
+      source_pages: [145],
+      fields: {},
+      region_ids: ['artifact-145'],
+      primary_artifact_region_id: 'artifact-145',
+      thumbnail_region_id: 'artifact-145',
+    }
+    const data: PageAnnotations = {
+      page: 145,
+      regions: [
+        {
+          ...annotationData.regions[0]!,
+          id: 'artifact-145',
+          page: 145,
+          kind: 'artifact',
+          crop_object_key: 'pages/145/m3-4.png',
+        },
+      ],
+      relations: [],
+      records: [textSibling, drawingSibling],
+    }
+
+    // Entity context may pass both siblings; ownership must not require polluted region_ids.
+    const annotations = buildPreviewAnnotations([textSibling, drawingSibling], data, 145)
+
+    expect(annotations).toHaveLength(1)
+    expect(annotations[0]?.regionId).toBe('artifact-145')
+    expect(annotations[0]?.recordId).toBe('drawing-sibling')
   })
 })

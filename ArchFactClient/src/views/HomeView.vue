@@ -39,7 +39,12 @@ import ProcessingPanel, {
   type ProcessLog,
 } from '@/components/business/ProcessingPanel.vue'
 import RelatedPages from '@/components/business/RelatedPages.vue'
-import { buildPreviewAnnotations } from '@/domain/preview-annotations'
+import { groupCatalogRecordsByEntity } from '@/domain/catalog-records'
+import {
+  buildPreviewAnnotations,
+  ensureSelectedPrimaryArtifactAnnotation,
+} from '@/domain/preview-annotations'
+import { resolvePreviewDocumentPage } from '@/domain/preview-document-page'
 import { filterExtractedPdfPages } from '@/domain/preview-pages'
 import { getDefaultExtractionPages } from '@/domain/page-selection'
 import { useI18n } from '@/i18n'
@@ -139,8 +144,11 @@ const pagePreviewUrls = computed<Record<number, string>>(() => ({
 }))
 
 const previewCatalogRecords = computed(() => {
-  const records =
+  const sourceRecords =
     previewMode.value === 'verify' ? verificationRecords.value : extractionRecords.value
+  const records = previewMode.value === 'verify'
+    ? sourceRecords
+    : groupCatalogRecordsByEntity(sourceRecords)
   const completedRecord = recordEvidenceContext.value?.record
   if (!completedRecord) return records
   return records.map((record) => (
@@ -179,16 +187,21 @@ const currentPreviewRecords = computed(() => {
   )
 })
 
+const contextPreviewRecord = computed(
+  () => recordEvidenceContext.value?.text_record ?? recordEvidenceContext.value?.record,
+)
+
 const previewAnnotations = computed<PreviewAnnotation[]>(() => {
   const page = previewSelectedPage.value
   if (page === null) return []
   const context = recordEvidenceContext.value
+  const previewRecord = contextPreviewRecord.value
   const annotationData = context
     ? {
         page,
         regions: context.regions,
         relations: context.relations,
-        records: [context.record],
+        records: previewRecord ? [previewRecord] : [],
       }
     : pageAnnotationData.value?.page === page
       ? pageAnnotationData.value
@@ -197,7 +210,7 @@ const previewAnnotations = computed<PreviewAnnotation[]>(() => {
     ? (regionId: string) => getRegionCropContentUrl(currentJobId.value, regionId)
     : undefined
   return buildPreviewAnnotations(
-    context ? [context.record] : currentPreviewRecords.value,
+    context && previewRecord ? [previewRecord] : currentPreviewRecords.value,
     annotationData,
     page,
     cropUrl,
@@ -207,19 +220,32 @@ const previewAnnotations = computed<PreviewAnnotation[]>(() => {
 const evidenceContextAnnotations = computed<PreviewAnnotation[]>(() => {
   const context = recordEvidenceContext.value
   if (!context || !currentJobId.value) return previewAnnotations.value
+  const previewRecord = contextPreviewRecord.value
+  if (!previewRecord) return []
   const cropUrl = (regionId: string) => getRegionCropContentUrl(currentJobId.value, regionId)
-  return context.page_numbers.flatMap((page) =>
+  const annotations = context.page_numbers.flatMap((page) =>
     buildPreviewAnnotations(
-      [context.record],
+      [previewRecord],
       {
         page,
         regions: context.regions,
         relations: context.relations,
-        records: [context.record],
+        records: [previewRecord],
       },
       page,
       cropUrl,
     ),
+  )
+  return ensureSelectedPrimaryArtifactAnnotation(
+    annotations,
+    context.record,
+    {
+      page: context.primary_text_page,
+      regions: context.regions,
+      relations: context.relations,
+      records: [context.record],
+    },
+    cropUrl,
   )
 })
 
@@ -252,6 +278,7 @@ watch(
 watch(
   currentPreviewRecords,
   (records) => {
+    if (recordEvidenceContext.value) return
     if (!records.some((record) => record.id === selectedRecordId.value)) {
       selectedRecordId.value = records[0]?.id ?? ''
     }
@@ -303,7 +330,12 @@ function applyJobState(job: ExtractionJob) {
   )
   progress.value = job.progress.percent
   processingStartedAt.value = job.attempt_started_at ?? job.created_at
-  processingEndedAt.value = terminal ? job.updated_at : null
+  // Prefer completed_at: updated_at is bumped by rematch/apply and would inflate elapsed.
+  processingEndedAt.value = terminal
+    ? (job.completed_at
+      ?? job.events.at(-1)?.created_at
+      ?? job.updated_at)
+    : null
   jobRunning.value = !terminal
   processedPages.value = job.progress.current
   totalProcessingPages.value = job.progress.total || totalProcessingPages.value
@@ -652,17 +684,15 @@ async function selectCatalogRecord(record: ExtractionRecord, preferredAnnotation
     const context = await getRecordEvidenceContext(currentJobId.value, record.id)
     if (requestId !== evidenceContextRequestId || selectedRecordId.value !== record.id) return
     recordEvidenceContext.value = context
+    const textPage = resolvePreviewDocumentPage(context)
     context.page_numbers.forEach((page) => {
       void renderThumbnail(page)
-      void renderEvidencePage(page)
+      if (page !== textPage) void renderEvidencePage(page)
     })
-    const sourcePage =
-      record.source_pages.find((page) => context.page_numbers.includes(page)) ??
-      context.page_numbers[0]
-    if (!sourcePage) return
-    previewSelectedPage.value = sourcePage
-    activePage.value = sourcePage
-    void renderSelectedPage(sourcePage)
+    if (!textPage) return
+    previewSelectedPage.value = textPage
+    activePage.value = textPage
+    void renderSelectedPage(textPage)
   } catch (error: unknown) {
     if (requestId !== evidenceContextRequestId) return
     recordEvidenceContext.value = null
@@ -891,11 +921,15 @@ async function renderThumbnail(pageNumber: number) {
 
 /** 从全文压缩图定位到当前器物的一条跨页证据。 */
 function selectOverviewAnnotation(pageNumber: number, annotationId: string) {
-  previewSelectedPage.value = pageNumber
-  activePage.value = pageNumber
+  const context = recordEvidenceContext.value
+  const textPage = context
+    ? resolvePreviewDocumentPage(context)
+    : pageNumber
+  previewSelectedPage.value = textPage
+  activePage.value = textPage
   activeAnnotationId.value = annotationId
-  void renderThumbnail(pageNumber)
-  void renderSelectedPage(pageNumber)
+  void renderThumbnail(textPage)
+  void renderSelectedPage(textPage)
 }
 
 /** 读取本地 PDF，初始化页码列表并优先渲染第一页 */
@@ -997,9 +1031,19 @@ async function restoreLatestExtractionResult() {
   try {
     const savedJobId = globalThis.localStorage.getItem(lastExtractionJobStorageKey)
     if (savedJobId === 'disabled') return
-    const job = savedJobId
-      ? await getExtractionJob(savedJobId)
-      : await getLatestCompletedExtractionJob()
+    let job: ExtractionJob | null = null
+    if (savedJobId) {
+      try {
+        job = await getExtractionJob(savedJobId, { suppressErrorMessage: true })
+      } catch {
+        // 数据库重建或任务被清理后，本地保存的任务编号可能已经失效。
+        // 清理旧值并自动回退到最近一次完成的任务，避免刷新页面后停在 404。
+        globalThis.localStorage.removeItem(lastExtractionJobStorageKey)
+        job = await getLatestCompletedExtractionJob()
+      }
+    } else {
+      job = await getLatestCompletedExtractionJob()
+    }
     if (!job) return
 
     currentJobId.value = job.id

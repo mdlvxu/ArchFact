@@ -1,3 +1,5 @@
+import asyncio
+
 from app.main import app
 from app.models.schemas import RematchChangesView, RematchCreate, VerificationItemUpdate
 from app.repositories.mongo_repository import MongoRepository
@@ -163,3 +165,130 @@ def test_clean_record_removes_only_previous_matching_state() -> None:
     assert cleaned["fields"]["category"]["evidence"][0]["region_id"] == "text-1"
     assert "linked_region_ids" not in cleaned["fields"]["category"]["evidence"][0]
     assert "relation_ids" not in cleaned
+
+
+def test_cancel_finalizes_stale_run_after_dispatcher_restart() -> None:
+    class Repository:
+        def __init__(self) -> None:
+            self.updated: dict | None = None
+
+        async def request_rematch_cancel(self, job_id: str, rematch_id: str) -> dict:
+            return {"_id": rematch_id, "job_id": job_id, "status": "cancelling"}
+
+        async def get_rematch_run(self, job_id: str, rematch_id: str) -> dict:
+            return {"_id": rematch_id, "job_id": job_id, "status": "cancelling"}
+
+        async def update_rematch_run(self, rematch_id: str, **updates: object) -> dict:
+            self.updated = {"_id": rematch_id, **updates}
+            return self.updated
+
+    class Dispatcher:
+        async def cancel(self, rematch_id: str) -> bool:
+            return False
+
+    repository = Repository()
+    service = RematchService(
+        repository=repository,  # type: ignore[arg-type]
+        relation_matcher=None,  # type: ignore[arg-type]
+        result_fusion=None,  # type: ignore[arg-type]
+        entity_linker=None,  # type: ignore[arg-type]
+        dispatcher=Dispatcher(),  # type: ignore[arg-type]
+    )
+
+    result = asyncio.run(service.cancel("job-1", "rematch-stale"))
+
+    assert result["status"] == "cancelled"
+    assert result["cancel_requested"] is True
+    assert result["progress"]["stage"] == "cancelled"
+
+
+def test_mark_stale_active_rematch_runs_finalizes_orphans() -> None:
+    class Collection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[dict, dict]] = []
+
+        async def update_many(self, query, update):  # noqa: ANN001
+            self.calls.append((query, update))
+
+            class Result:
+                modified_count = 2
+
+            return Result()
+
+    class Database:
+        def __init__(self) -> None:
+            self.rematch_runs = Collection()
+
+    repository = MongoRepository.__new__(MongoRepository)
+    repository._db = Database()  # type: ignore[attr-defined]
+
+    modified = asyncio.run(repository.mark_stale_active_rematch_runs())
+
+    assert modified == 2
+    query, update = repository._db.rematch_runs.calls[0]  # type: ignore[attr-defined]
+    assert query["status"]["$in"] == ["queued", "running", "applying", "cancelling"]
+    assert update["$set"]["status"] == "failed"
+    assert "重启" in update["$set"]["error"]
+
+
+def test_mark_stale_active_extraction_jobs_freezes_completed_at() -> None:
+    class Collection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[dict, object]] = []
+
+        async def update_many(self, query, update):  # noqa: ANN001
+            self.calls.append((query, update))
+
+            class Result:
+                modified_count = 1
+
+            return Result()
+
+    class Database:
+        def __init__(self) -> None:
+            self.extraction_jobs = Collection()
+
+    repository = MongoRepository.__new__(MongoRepository)
+    repository._db = Database()  # type: ignore[attr-defined]
+
+    modified = asyncio.run(repository.mark_stale_active_extraction_jobs())
+
+    assert modified == 1
+    query, update = repository._db.extraction_jobs.calls[0]  # type: ignore[attr-defined]
+    assert "extracting" in query["status"]["$in"]
+    assert "queued" in query["status"]["$in"]
+    assert isinstance(update, list)
+    assert update[0]["$set"]["completed_at"] == {"$ifNull": ["$completed_at", "$updated_at"]}
+    assert update[1]["$set"]["status"] == "failed"
+    assert "重启" in update[1]["$set"]["error"]
+
+
+def test_update_job_sets_completed_at_only_on_terminal_status() -> None:
+    class Collection:
+        def __init__(self) -> None:
+            self.sets: list[dict] = []
+
+        async def update_one(self, query, update):  # noqa: ANN001
+            self.sets.append(update["$set"])
+
+            class Result:
+                matched_count = 1
+
+            return Result()
+
+    class Database:
+        def __init__(self) -> None:
+            self.extraction_jobs = Collection()
+
+    repository = MongoRepository.__new__(MongoRepository)
+    repository._db = Database()  # type: ignore[attr-defined]
+
+    asyncio.run(repository.update_job("job_1", status="completed", stage="completed"))
+    asyncio.run(repository.update_job("job_1", active_matching_version_id="M1"))
+    asyncio.run(repository.update_job("job_1", status="queued", stage="retry_waiting"))
+
+    first, second, third = repository._db.extraction_jobs.sets  # type: ignore[attr-defined]
+    assert first["status"] == "completed"
+    assert first["completed_at"] is not None
+    assert "completed_at" not in second
+    assert third["completed_at"] is None

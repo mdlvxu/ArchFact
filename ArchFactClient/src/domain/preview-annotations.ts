@@ -99,6 +99,31 @@ function resolvePrimaryArtifactRegionId(
     })[0]?.target_region_id
 }
 
+function resolveRecordForRegion(
+  records: ExtractionRecord[],
+  region: { id: string; page: number },
+) {
+  const direct = records.find((item) => item.region_ids?.includes(region.id))
+  if (direct) return direct
+
+  const byPrimary = records.find(
+    (item) =>
+      item.primary_artifact_region_id === region.id || item.thumbnail_region_id === region.id,
+  )
+  if (byPrimary) return byPrimary
+
+  const samePage = records.filter((item) => item.source_pages?.includes(region.page))
+  if (samePage.length === 1) return samePage[0]
+
+  const entityIds = new Set(
+    records.map((item) => item.entity_id).filter((value): value is string => Boolean(value)),
+  )
+  if (entityIds.size === 1 && samePage.length > 0) {
+    return samePage.find((item) => item.primary_artifact_region_id || item.thumbnail_region_id) ?? samePage[0]
+  }
+  return undefined
+}
+
 /** Converts backend-owned evidence geometry into UI annotations without synthetic boxes. */
 export function buildPreviewAnnotations(
   records: ExtractionRecord[],
@@ -151,7 +176,7 @@ export function buildPreviewAnnotations(
               .join(' '),
             quote: evidence.quote || region?.text || '',
             bbox,
-            approximate: false,
+            approximate: region?.approximate ?? false,
             relationIds: [...relationIds],
             source: evidence.source ?? region?.source,
             confidence: evidence.confidence ?? region?.confidence,
@@ -179,7 +204,7 @@ export function buildPreviewAnnotations(
           label: 'Text Evidence',
           quote: evidence.quote || region?.text || '',
           bbox,
-          approximate: false,
+          approximate: region?.approximate ?? false,
           relationIds: evidence.relation_ids ?? [],
           source: evidence.source ?? region?.source,
           confidence: evidence.confidence ?? region?.confidence,
@@ -212,7 +237,7 @@ export function buildPreviewAnnotations(
         label,
         quote: region.text || region.ocr_raw_text || '',
         bbox,
-        approximate: false,
+        approximate: region.approximate ?? false,
         relationIds,
         source: region.source,
         confidence: region.confidence,
@@ -242,7 +267,7 @@ export function buildPreviewAnnotations(
           relation.source_region_id === region.id || relation.target_region_id === region.id,
       )
       .map((relation) => relation.id)
-    const record = records.find((item) => item.region_ids?.includes(region.id))
+    const record = resolveRecordForRegion(records, region)
     if (!record) return
 
     const bbox = normalizedEvidenceBox(region.bbox)
@@ -258,7 +283,7 @@ export function buildPreviewAnnotations(
       label: region.kind.replaceAll('_', ' '),
       quote: region.text,
       bbox,
-      approximate: false,
+      approximate: region.approximate ?? false,
       relationIds,
       source: region.source,
       confidence: region.confidence,
@@ -267,4 +292,81 @@ export function buildPreviewAnnotations(
     })
   })
   return annotations
+}
+
+/**
+ * Entity context may choose a sibling record as the richest body-text source.
+ * The visual target, however, must always come from the catalog card the user
+ * actually selected. Re-assert that record's backend-owned primary artifact
+ * after the text annotations have been assembled.
+ */
+export function ensureSelectedPrimaryArtifactAnnotation(
+  annotations: PreviewAnnotation[],
+  selectedRecord: ExtractionRecord,
+  annotationData: PageAnnotations,
+  regionCropUrl?: (regionId: string) => string,
+): PreviewAnnotation[] {
+  const primaryRegionId =
+    selectedRecord.primary_artifact_region_id ?? selectedRecord.thumbnail_region_id
+  if (!primaryRegionId) return annotations
+
+  const region = annotationData.regions.find((item) => item.id === primaryRegionId)
+  const bbox = normalizedEvidenceBox(region?.bbox)
+  if (
+    !region ||
+    !bbox ||
+    !['artifact', 'line_drawing', 'grave_drawing'].includes(region.kind) ||
+    !region.crop_object_key ||
+    !regionCropUrl
+  ) {
+    return annotations
+  }
+
+  const relationIds = annotationData.relations
+    .filter(
+      (relation) =>
+        relation.source_region_id === primaryRegionId ||
+        relation.target_region_id === primaryRegionId,
+    )
+    .map((relation) => relation.id)
+  let primaryFound = false
+  const normalized = annotations.map((annotation) => {
+    if (annotation.regionId !== primaryRegionId) {
+      return annotation.primaryArtifact ? { ...annotation, primaryArtifact: false } : annotation
+    }
+    primaryFound = true
+    return {
+      ...annotation,
+      recordId: selectedRecord.id,
+      kind: previewKind(region.kind),
+      regionKind: region.kind,
+      bbox,
+      cropUrl: regionCropUrl(primaryRegionId),
+      primaryArtifact: true,
+      relationIds: [...new Set([...annotation.relationIds, ...relationIds])],
+    }
+  })
+  if (primaryFound) return normalized
+
+  return [
+    ...normalized,
+    {
+      id: `selected-primary:${selectedRecord.id}:${primaryRegionId}`,
+      regionId: primaryRegionId,
+      recordId: selectedRecord.id,
+      fieldKey: region.kind,
+      page: region.page,
+      kind: previewKind(region.kind),
+      regionKind: region.kind,
+      label: region.kind.replaceAll('_', ' '),
+      quote: region.text || region.ocr_raw_text || '',
+      bbox,
+      approximate: region.approximate ?? false,
+      relationIds,
+      source: region.source,
+      confidence: region.confidence,
+      cropUrl: regionCropUrl(primaryRegionId),
+      primaryArtifact: true,
+    },
+  ]
 }

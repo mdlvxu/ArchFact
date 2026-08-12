@@ -2,6 +2,11 @@ import axios, { type AxiosInstance, type AxiosRequestConfig, type AxiosResponse 
 import { ElMessage } from 'element-plus'
 import { translate } from '@/i18n'
 
+export interface RequestOptions extends AxiosRequestConfig {
+  /** 由调用方自行处理的预期错误（例如恢复已失效的本地任务）不显示全局提示。 */
+  suppressErrorMessage?: boolean
+}
+
 /** 后端统一响应结构 */
 export interface ApiResponse<T = unknown> {
   code: number
@@ -55,16 +60,19 @@ http.interceptors.response.use(
   (error: unknown) => {
     if (axios.isAxiosError(error)) {
       const status = error.response?.status
+      const requestOptions = error.config as RequestOptions | undefined
 
-      // 公共 HTTP 错误统一提示
-      if (status === 401) {
-        ElMessage.error(translate('api.unauthorized'))
-      } else if (status === 403) {
-        ElMessage.error(translate('api.forbidden'))
-      } else if (status === 500) {
-        ElMessage.error(translate('api.serverError'))
-      } else {
-        ElMessage.error(error.message || translate('api.networkError'))
+      if (!requestOptions?.suppressErrorMessage) {
+        // 公共 HTTP 错误统一提示
+        if (status === 401) {
+          ElMessage.error(translate('api.unauthorized'))
+        } else if (status === 403) {
+          ElMessage.error(translate('api.forbidden'))
+        } else if (status === 500) {
+          ElMessage.error(translate('api.serverError'))
+        } else {
+          ElMessage.error(error.message || translate('api.networkError'))
+        }
       }
     }
 
@@ -73,7 +81,7 @@ http.interceptors.response.use(
 )
 
 /** 封装 GET 请求，返回解析后的 data */
-export function get<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+export function get<T>(url: string, config?: RequestOptions): Promise<T> {
   return http.get<ApiResponse<T>, T>(url, config)
 }
 

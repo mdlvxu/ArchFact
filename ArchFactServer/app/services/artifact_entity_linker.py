@@ -16,7 +16,7 @@ class ArtifactEntityLinker:
 
     provider = "archfact"
     model = "document-artifact-entity-linker"
-    version = "2"
+    version = "4"
     _visual_kinds = {
         "artifact",
         "line_drawing",
@@ -24,6 +24,9 @@ class ArtifactEntityLinker:
         "grave_drawing",
     }
     _combined_reference = re.compile(r"^(.+?)[\s:\uFF1A\-\u2013\u2014]+([A-Za-z0-9]+)$")
+    _artifact_identifier = re.compile(
+        r"^[A-Z]{1,6}\d+[A-Z]?(?::[A-Z]?\d+[A-Z]?)+$"
+    )
 
     def link(
         self,
@@ -118,6 +121,11 @@ class ArtifactEntityLinker:
             ]
             confidence, link_status = self._link_quality(match_keys, visual_region_ids)
             canonical_artifact_id = self._canonical_artifact_id(group_records)
+            entity_thumbnail = self._thumbnail_region_id(
+                visual_region_ids,
+                region_by_id,
+                preferred_pages=source_pages,
+            )
             entity = {
                 "id": entity_id,
                 "job_id": job_id,
@@ -132,10 +140,7 @@ class ArtifactEntityLinker:
                 "relation_ids": relation_ids,
                 "source_pages": source_pages,
                 "associated_pages": associated_pages,
-                "thumbnail_region_id": self._thumbnail_region_id(
-                    visual_region_ids,
-                    region_by_id,
-                ),
+                "thumbnail_region_id": entity_thumbnail,
                 "confidence": confidence,
                 "link_status": link_status,
                 "link_reasons": sorted({self._token_reason(token) for token in match_keys}),
@@ -143,16 +148,80 @@ class ArtifactEntityLinker:
             }
             entities.append(entity)
             for record in group_records:
+                # Page-level records keep provenance-only region/relation IDs.
+                # The entity document owns the cross-page union for navigation.
                 record["entity_id"] = entity_id
                 record["entity_confidence"] = confidence
                 record["entity_match_status"] = link_status
-                record["region_ids"] = region_ids
-                record["relation_ids"] = relation_ids
-                record["associated_pages"] = associated_pages
-                if not record.get("thumbnail_region_id"):
-                    record["thumbnail_region_id"] = entity["thumbnail_region_id"]
+                record["associated_pages"] = self._record_associated_pages(
+                    record,
+                    region_by_id,
+                )
+                self._assign_displayable_thumbnail(
+                    record=record,
+                    region_by_id=region_by_id,
+                    entity_thumbnail=entity_thumbnail,
+                )
 
         return EntityLinkOutput(records=records, entities=entities)
+
+    @classmethod
+    def _record_associated_pages(
+        cls,
+        record: dict[str, Any],
+        region_by_id: dict[str, dict[str, Any]],
+    ) -> list[int]:
+        pages = {
+            int(page)
+            for page in record.get("source_pages", [])
+            if isinstance(page, int) or str(page).isdigit()
+        }
+        for region_id in record.get("region_ids", []):
+            region = region_by_id.get(str(region_id))
+            if region is None:
+                continue
+            page = region.get("page")
+            if isinstance(page, int):
+                pages.add(page)
+        return sorted(pages)
+
+    @classmethod
+    def _assign_displayable_thumbnail(
+        cls,
+        *,
+        record: dict[str, Any],
+        region_by_id: dict[str, dict[str, Any]],
+        entity_thumbnail: str | None,
+    ) -> None:
+        current = region_by_id.get(str(record.get("thumbnail_region_id") or ""))
+        if cls._region_has_displayable_crop(current):
+            return
+        record_pages = {
+            int(page) for page in record.get("source_pages") or []
+        }
+        thumb_region = region_by_id.get(str(entity_thumbnail or ""))
+        if cls._region_has_displayable_crop(thumb_region) and (
+            not record_pages or int(thumb_region.get("page", -1)) in record_pages
+        ):
+            record["thumbnail_region_id"] = entity_thumbnail
+            return
+        # Prefer a displayable crop already owned by this page-level record.
+        owned = cls._thumbnail_region_id(
+            [str(region_id) for region_id in record.get("region_ids", [])],
+            region_by_id,
+            preferred_pages=sorted(record_pages),
+        )
+        record["thumbnail_region_id"] = owned
+
+    @staticmethod
+    def _region_has_displayable_crop(region: dict[str, Any] | None) -> bool:
+        if region is None:
+            return False
+        if region.get("approximate") and not region.get("crop_object_key"):
+            return False
+        # Real crop files are always displayable. Non-approximate visuals without a
+        # key remain allowed for unit fixtures / pre-crop pipeline states.
+        return True if region.get("crop_object_key") else not bool(region.get("approximate"))
 
     @classmethod
     def _record_tokens(cls, record: dict[str, Any]) -> set[str]:
@@ -168,8 +237,8 @@ class ArtifactEntityLinker:
             *(hints.get("artifact_ids", []) if isinstance(hints, dict) else []),
         ]
         for value in artifact_values:
-            normalized = cls._normalize(value)
-            if len(normalized) >= 3:
+            normalized = cls._normalize_artifact_identifier(value)
+            if normalized:
                 tokens.add(f"artifact:{normalized}")
 
         if isinstance(visual, dict):
@@ -268,17 +337,30 @@ class ArtifactEntityLinker:
         cls,
         region_ids: list[str],
         region_by_id: dict[str, dict[str, Any]],
+        *,
+        preferred_pages: list[int] | None = None,
     ) -> str | None:
+        """Pick a displayable crop; never use approximate regions without files."""
+
         priority = {"artifact": 0, "line_drawing": 1, "color_plate": 2, "grave_drawing": 3}
-        if not region_ids:
+        preferred = {int(page) for page in (preferred_pages or [])}
+        candidates: list[tuple[int, int, int, str]] = []
+        for region_id in region_ids:
+            region = region_by_id.get(region_id)
+            if region is None:
+                continue
+            if region.get("kind") not in cls._visual_kinds:
+                continue
+            if region.get("approximate") and not region.get("crop_object_key"):
+                continue
+            page = region.get("page")
+            crop_rank = 0 if region.get("crop_object_key") else 1
+            page_rank = 0 if isinstance(page, int) and page in preferred else 1
+            kind_rank = priority.get(str(region.get("kind")), 99)
+            candidates.append((crop_rank, page_rank, kind_rank, region_id))
+        if not candidates:
             return None
-        return min(
-            region_ids,
-            key=lambda region_id: priority.get(
-                str(region_by_id[region_id].get("kind")),
-                99,
-            ),
-        )
+        return min(candidates)[3]
 
     @staticmethod
     def _token_reason(token: str) -> str:
@@ -295,3 +377,22 @@ class ArtifactEntityLinker:
             return ""
         normalized = unicodedata.normalize("NFKC", str(value)).casefold()
         return "".join(character for character in normalized if character.isalnum())
+
+    # Tomb/unit labels such as 仲M4:3 appear on color plates; strip for linking.
+    _tomb_unit_prefix_pattern = re.compile(r"^[\u4e00-\u9fff]{1,2}(?=[A-Z])")
+
+    @classmethod
+    def _normalize_artifact_identifier(cls, value: Any) -> str:
+        """Normalize an artifact ID without erasing its numeric boundaries."""
+
+        if value is None:
+            return ""
+        normalized = re.sub(
+            r"\s+",
+            "",
+            unicodedata.normalize("NFKC", str(value)).upper(),
+        )
+        normalized = cls._tomb_unit_prefix_pattern.sub("", normalized)
+        if not cls._artifact_identifier.fullmatch(normalized):
+            return ""
+        return normalized.casefold()

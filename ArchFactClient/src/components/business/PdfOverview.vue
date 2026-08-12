@@ -33,7 +33,16 @@ const emit = defineEmits<{
 }>()
 
 const overviewRef = ref<HTMLElement>()
+const overviewHeight = ref(0)
 let thumbnailObserver: IntersectionObserver | undefined
+let overviewResizeObserver: ResizeObserver | undefined
+
+type OverviewMarkerKind = PreviewAnnotationKind | 'artifact_crop'
+
+interface OverviewMarker {
+  kind: OverviewMarkerKind
+  annotation: PreviewAnnotation
+}
 
 const markerKinds: PreviewAnnotationKind[] = ['line_drawing', 'text', 'color_plate']
 
@@ -93,45 +102,75 @@ const selectedMarkers = computed(() => {
     candidates.find((annotation) => annotation.kind === 'line_drawing')
   const anchorRegionId = anchor?.regionId ?? ''
 
-  return markerKinds.flatMap((kind) => {
+  const markers: OverviewMarker[] = markerKinds.flatMap((kind) => {
     const kindCandidates = candidates.filter((annotation) => annotation.kind === kind)
     if (!kindCandidates.length) return []
-    if (kind === 'line_drawing' && anchor) return [anchor]
+    if (kind === 'line_drawing' && anchor) {
+      return [{ kind, annotation: anchor }]
+    }
 
     const directlyRelated = anchorRegionId
       ? kindCandidates.filter((annotation) => connectsToAnchor(annotation, anchorRegionId))
       : []
     const eligible = directlyRelated.length ? directlyRelated : kindCandidates
     return [
-      [...eligible].sort(
-        (left, right) =>
-          markerCandidateScore(right, kind, anchorRegionId) -
-          markerCandidateScore(left, kind, anchorRegionId),
-      )[0]!,
+      {
+        kind,
+        annotation: [...eligible].sort(
+          (left, right) =>
+            markerCandidateScore(right, kind, anchorRegionId) -
+            markerCandidateScore(left, kind, anchorRegionId),
+        )[0]!,
+      },
     ]
   })
+
+  const cropCandidates = candidates.filter(
+    (annotation) =>
+      Boolean(annotation.cropUrl) &&
+      (annotation.regionKind === 'artifact' ||
+        annotation.regionKind === 'grave_drawing' ||
+        annotation.kind === 'line_drawing'),
+  )
+  if (cropCandidates.length) {
+    const crop =
+      cropCandidates.find((annotation) => annotation.primaryArtifact) ??
+      cropCandidates.find((annotation) => annotation.id === anchor?.id) ??
+      cropCandidates[0]!
+    markers.push({ kind: 'artifact_crop', annotation: crop })
+  }
+
+  return markers
 })
 
-const overviewPageHeight = 44
 const overviewTrackPadding = 2
+const overviewPageHeight = computed(() =>
+  props.pages.length
+    ? Math.max(0, (overviewHeight.value - overviewTrackPadding * 2) / props.pages.length)
+    : 0,
+)
+
+const overviewTrackStyle = computed(() => ({
+  gridTemplateRows: `repeat(${Math.max(1, props.pages.length)}, minmax(0, 1fr))`,
+}))
 
 /** Enclose every marker belonging to the selected artifact, even across pages. */
 const markerRangeStyle = computed(() => {
-  const positions = selectedMarkers.value.flatMap((annotation) => {
+  const positions = selectedMarkers.value.flatMap(({ annotation }) => {
     const pageIndex = props.pages.findIndex((page) => page.page === annotation.page)
     if (pageIndex < 0) return []
     const center = (annotation.bbox[1] + annotation.bbox[3]) / 2
     return [
       overviewTrackPadding +
-        pageIndex * overviewPageHeight +
-        center * overviewPageHeight,
+        pageIndex * overviewPageHeight.value +
+        center * overviewPageHeight.value,
     ]
   })
   if (!positions.length) return undefined
 
   const trackTop = overviewTrackPadding
   const trackBottom =
-    overviewTrackPadding + props.pages.length * overviewPageHeight
+    overviewTrackPadding + props.pages.length * overviewPageHeight.value
   const markerTop = Math.min(...positions)
   const markerBottom = Math.max(...positions)
   const rangePadding = 8
@@ -153,10 +192,11 @@ const markerRangeStyle = computed(() => {
 })
 
 const annotationsByPage = computed(() => {
-  const result = new Map<number, PreviewAnnotation[]>()
-  for (const annotation of selectedMarkers.value) {
+  const result = new Map<number, OverviewMarker[]>()
+  for (const marker of selectedMarkers.value) {
+    const { annotation } = marker
     const pageAnnotations = result.get(annotation.page) ?? []
-    pageAnnotations.push(annotation)
+    pageAnnotations.push(marker)
     result.set(annotation.page, pageAnnotations)
   }
   return result
@@ -166,13 +206,25 @@ function markersForPage(page: number) {
   return annotationsByPage.value.get(page) ?? []
 }
 
-function markerStyle(annotation: PreviewAnnotation) {
+function markerStyle(marker: OverviewMarker) {
+  const { annotation, kind } = marker
   const center = ((annotation.bbox[1] + annotation.bbox[3]) / 2) * 100
-  return { top: `${Math.min(98, Math.max(2, center))}%` }
+  const offset = kind === 'line_drawing'
+    ? -4
+    : kind === 'artifact_crop'
+      ? -1
+      : kind === 'text'
+        ? 2
+        : 5
+  return { top: `calc(${Math.min(98, Math.max(2, center))}% + ${offset}px)` }
 }
 
-function markerLabel(annotation: PreviewAnnotation) {
-  const kindLabel = t(`overview.marker.${annotation.kind}`)
+function markerLabel(marker: OverviewMarker) {
+  const { annotation, kind } = marker
+  const kindLabel =
+    kind === 'artifact_crop'
+      ? t('preview.artifactCrop')
+      : t(`overview.marker.${kind}`)
   const quote = annotation.quote.trim()
   return `${t('common.page', { page: annotation.page })} · ${kindLabel}${quote ? ` · ${quote}` : ''}`
 }
@@ -203,15 +255,6 @@ async function observeVisiblePages() {
 
 async function revealActivePage() {
   await nextTick()
-  const container = overviewRef.value
-  const activeElement = container?.querySelector<HTMLElement>(
-    `[data-overview-page="${props.activePage}"]`,
-  )
-  if (!container || !activeElement) return
-
-  const targetTop = activeElement.offsetTop - (container.clientHeight - activeElement.offsetHeight) / 2
-  container.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
-
   const item = props.pages.find((candidate) => candidate.page === props.activePage)
   if (item && !item.thumbnailUrl && !item.loading) emit('thumbnailNeeded', props.activePage)
 }
@@ -219,8 +262,27 @@ async function revealActivePage() {
 watch(() => props.pages.length, observeVisiblePages, { immediate: true })
 watch(() => props.activePage, revealActivePage, { immediate: true })
 watch(() => props.selectedRecordId, revealActivePage)
+watch(
+  overviewRef,
+  (element) => {
+    overviewResizeObserver?.disconnect()
+    overviewResizeObserver = undefined
+    if (!element) return
 
-onBeforeUnmount(() => thumbnailObserver?.disconnect())
+    const syncHeight = () => {
+      overviewHeight.value = element.clientHeight
+    }
+    syncHeight()
+    overviewResizeObserver = new ResizeObserver(syncHeight)
+    overviewResizeObserver.observe(element)
+  },
+  { flush: 'post' },
+)
+
+onBeforeUnmount(() => {
+  thumbnailObserver?.disconnect()
+  overviewResizeObserver?.disconnect()
+})
 </script>
 
 <template>
@@ -231,7 +293,10 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
       class="overview-scroll"
       :aria-label="t('overview.title')"
     >
-      <div class="overview-track">
+      <div
+        class="overview-track"
+        :style="overviewTrackStyle"
+      >
         <span
           v-if="markerRangeStyle"
           class="marker-range-indicator"
@@ -272,18 +337,20 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
             aria-hidden="true"
           />
           <button
-            v-for="annotation in markersForPage(item.page)"
-            :key="annotation.id"
+            v-for="marker in markersForPage(item.page)"
+            :key="`${marker.kind}:${marker.annotation.id}`"
             type="button"
             class="overview-marker"
             :class="[
-              `overview-marker--${annotation.kind}`,
-              { 'overview-marker--active': annotation.id === activeAnnotationId },
+              `overview-marker--${marker.kind}`,
+              { 'overview-marker--active': marker.annotation.id === activeAnnotationId },
             ]"
-            :style="markerStyle(annotation)"
-            :title="markerLabel(annotation)"
-            :aria-label="markerLabel(annotation)"
-            @click.stop="emit('selectAnnotation', annotation.page, annotation.id)"
+            :style="markerStyle(marker)"
+            :title="markerLabel(marker)"
+            :aria-label="markerLabel(marker)"
+            @click.stop="
+              emit('selectAnnotation', marker.annotation.page, marker.annotation.id)
+            "
           />
         </div>
       </div>
@@ -320,8 +387,7 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
   position: relative;
   flex: 1;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
   background: #f3f0ec;
   border: 0;
   border-radius: 9px;
@@ -335,6 +401,8 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
 .overview-track {
   position: relative;
   display: grid;
+  width: 100%;
+  height: 100%;
   gap: 0;
   padding: 2px 5px;
 }
@@ -357,7 +425,7 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
 .overview-page {
   position: relative;
   width: 100%;
-  height: 44px;
+  min-height: 0;
   padding: 0;
   overflow: visible;
   cursor: pointer;
@@ -436,8 +504,12 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
   background: #91c96a;
 }
 
-.overview-marker--color_plate {
+.overview-marker--artifact_crop {
   background: #59bdd4;
+}
+
+.overview-marker--color_plate {
+  background: #c97916;
 }
 
 .overview-empty {

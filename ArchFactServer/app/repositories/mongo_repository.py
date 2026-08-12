@@ -9,6 +9,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.core.errors import ConflictError, DomainError, NotFoundError
 from app.infrastructure.mongodb import MongoDatabase
+from app.services.page_semantics import PageSemantics
 from app.services.verification_sampling import select_stratified_verification_sample
 
 
@@ -19,6 +20,7 @@ def utc_now() -> datetime:
 class MongoRepository:
     def __init__(self, database: MongoDatabase) -> None:
         self._db = database.database
+        self._reference_index_page_cache: dict[str, list[int]] = {}
 
     async def create_document(
         self,
@@ -581,6 +583,8 @@ class MongoRepository:
             "error": None,
             "created_at": now,
             "updated_at": now,
+            "completed_at": None,
+            "attempt_started_at": None,
         }
         if idempotency_key:
             job["idempotency_key"] = idempotency_key
@@ -609,6 +613,19 @@ class MongoRepository:
 
     async def update_job(self, job_id: str, **fields: Any) -> None:
         fields["updated_at"] = utc_now()
+        # Rematch / verification / matching-version updates bump updated_at. Elapsed time
+        # must freeze at the extraction finish instant, so track completed_at separately.
+        terminal_statuses = {
+            "completed",
+            "completed_with_warnings",
+            "failed",
+            "cancelled",
+        }
+        status = fields.get("status")
+        if status in terminal_statuses:
+            fields.setdefault("completed_at", utc_now())
+        elif status is not None:
+            fields["completed_at"] = None
         result = await self._db.extraction_jobs.update_one({"_id": job_id}, {"$set": fields})
         if result.matched_count == 0:
             raise NotFoundError("抽取任务不存在")
@@ -761,6 +778,7 @@ class MongoRepository:
         return await self._db.artifact_entities.find_one({"_id": entity_id, "job_id": job_id})
 
     async def replace_job_regions(self, job_id: str, regions: list[dict[str, Any]]) -> None:
+        self._reference_index_page_cache.pop(job_id, None)
         await self._db.source_regions.delete_many({"job_id": job_id})
         if not regions:
             return
@@ -769,6 +787,37 @@ class MongoRepository:
             {
                 "_id": region["id"],
                 **{key: value for key, value in region.items() if key != "id"},
+                "job_id": job_id,
+                "created_at": now,
+            }
+            for region in regions
+        ]
+        await self._db.source_regions.insert_many(documents)
+
+    async def replace_inferred_color_plate_regions(
+        self,
+        job_id: str,
+        regions: list[dict[str, Any]],
+    ) -> None:
+        self._reference_index_page_cache.pop(job_id, None)
+        await self._db.source_regions.delete_many(
+            {
+                "job_id": job_id,
+                "kind": "color_plate",
+                "source": "ocr_identifier_inference",
+            }
+        )
+        if not regions:
+            return
+        now = utc_now()
+        documents = [
+            {
+                "_id": str(region.get("id") or region.get("_id")),
+                **{
+                    key: value
+                    for key, value in region.items()
+                    if key not in {"id", "_id", "job_id", "created_at", "updated_at"}
+                },
                 "job_id": job_id,
                 "created_at": now,
             }
@@ -793,6 +842,8 @@ class MongoRepository:
         await self._db.region_relations.insert_many(documents)
 
     async def list_page_regions(self, job_id: str, page_no: int) -> list[dict[str, Any]]:
+        if page_no in await self._reference_index_pages(job_id):
+            return []
         cursor = self._db.source_regions.find({"job_id": job_id, "page": page_no}).sort(
             "created_at", 1
         )
@@ -986,6 +1037,8 @@ class MongoRepository:
         return await cursor.to_list(length=1000)
 
     async def list_page_records(self, job_id: str, page_no: int) -> list[dict[str, Any]]:
+        if page_no in await self._reference_index_pages(job_id):
+            return []
         cursor = self._db.extraction_records.find({"job_id": job_id, "source_pages": page_no}).sort(
             "created_at", 1
         )
@@ -1033,6 +1086,38 @@ class MongoRepository:
         cursor = self._db.model_runs.find({"job_id": job_id}).sort("started_at", 1)
         return await cursor.to_list(length=200)
 
+    async def _reference_index_pages(self, job_id: str) -> list[int]:
+        cached = self._reference_index_page_cache.get(job_id)
+        if cached is not None:
+            return cached
+
+        job = await self._db.extraction_jobs.find_one(
+            {"_id": job_id},
+            {"reference_index_pages": 1},
+        )
+        configured_pages = job.get("reference_index_pages") if job else None
+        if isinstance(configured_pages, list):
+            pages = sorted(
+                int(page) for page in configured_pages if isinstance(page, int)
+            )
+        else:
+            cursor = self._db.source_regions.find(
+                {"job_id": job_id},
+                {
+                    "_id": 0,
+                    "page": 1,
+                    "kind": 1,
+                    "bbox": 1,
+                    "text": 1,
+                    "ocr_raw_text": 1,
+                },
+            )
+            regions = await cursor.to_list(length=200000)
+            pages = sorted(PageSemantics.reference_index_pages_from_regions(regions))
+
+        self._reference_index_page_cache[job_id] = pages
+        return pages
+
     async def list_records(
         self,
         job_id: str,
@@ -1040,7 +1125,10 @@ class MongoRepository:
         page: int,
         page_size: int,
     ) -> tuple[list[dict[str, Any]], int]:
-        query = {"job_id": job_id}
+        query: dict[str, Any] = {"job_id": job_id}
+        reference_index_pages = await self._reference_index_pages(job_id)
+        if reference_index_pages:
+            query["source_pages"] = {"$nin": reference_index_pages}
         total = await self._db.extraction_records.count_documents(query)
         cursor = (
             self._db.extraction_records.find(query)
@@ -1055,6 +1143,20 @@ class MongoRepository:
         if record is None:
             raise NotFoundError("Extraction record does not exist")
         return record
+
+    async def list_records_by_ids(
+        self,
+        job_id: str,
+        record_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        if not record_ids:
+            return []
+        cursor = self._db.extraction_records.find(
+            {"job_id": job_id, "_id": {"$in": record_ids}}
+        )
+        records = await cursor.to_list(length=len(record_ids))
+        by_id = {str(record["_id"]): record for record in records}
+        return [by_id[record_id] for record_id in record_ids if record_id in by_id]
 
     async def list_regions_by_ids(
         self,
@@ -1091,7 +1193,11 @@ class MongoRepository:
         return await cursor.to_list(length=200000)
 
     async def list_job_records(self, job_id: str) -> list[dict[str, Any]]:
-        cursor = self._db.extraction_records.find({"job_id": job_id}).sort(
+        query: dict[str, Any] = {"job_id": job_id}
+        reference_index_pages = await self._reference_index_pages(job_id)
+        if reference_index_pages:
+            query["source_pages"] = {"$nin": reference_index_pages}
+        cursor = self._db.extraction_records.find(query).sort(
             [("source_pages", 1), ("created_at", 1)]
         )
         return await cursor.to_list(length=100000)
@@ -1160,6 +1266,76 @@ class MongoRepository:
         if run is None:
             raise NotFoundError("重新匹配任务不存在")
         return run
+
+    async def mark_stale_active_rematch_runs(self) -> int:
+        """Finalize rematch runs that cannot continue after process restart."""
+
+        now = utc_now()
+        result = await self._db.rematch_runs.update_many(
+            {
+                "status": {
+                    "$in": ["queued", "running", "applying", "cancelling"],
+                }
+            },
+            {
+                "$set": {
+                    "status": "failed",
+                    "cancel_requested": True,
+                    "error": "重新匹配任务在服务重启后失效",
+                    "completed_at": now,
+                    "updated_at": now,
+                    "progress": {
+                        "current": 0,
+                        "total": 0,
+                        "percent": 0,
+                        "stage": "failed",
+                    },
+                }
+            },
+        )
+        return int(result.modified_count)
+
+    async def mark_stale_active_extraction_jobs(self) -> int:
+        """Finalize extraction jobs that cannot continue after process restart.
+
+        completed_at is frozen to the previous updated_at (last progress) so elapsed
+        time does not stretch from attempt start until the next server boot.
+        """
+
+        now = utc_now()
+        result = await self._db.extraction_jobs.update_many(
+            {
+                "status": {
+                    "$in": [
+                        "queued",
+                        "preparing",
+                        "parsing",
+                        "extracting",
+                        "matching",
+                        "merging",
+                        "post_processing",
+                        "cancelling",
+                    ],
+                }
+            },
+            [
+                {
+                    "$set": {
+                        "completed_at": {"$ifNull": ["$completed_at", "$updated_at"]},
+                    }
+                },
+                {
+                    "$set": {
+                        "status": "failed",
+                        "stage": "failed",
+                        "cancel_requested": True,
+                        "error": "抽取任务在服务重启后中断，请重新启动抽取",
+                        "updated_at": now,
+                    }
+                },
+            ],
+        )
+        return int(result.modified_count)
 
     async def request_rematch_cancel(self, job_id: str, rematch_id: str) -> dict[str, Any]:
         run = await self.get_rematch_run(job_id, rematch_id)
@@ -1240,6 +1416,8 @@ class MongoRepository:
         candidate_relations: list[dict[str, Any]],
         candidate_records: list[dict[str, Any]],
         candidate_entities: list[dict[str, Any]],
+        baseline_inferred_regions: list[dict[str, Any]],
+        candidate_inferred_regions: list[dict[str, Any]],
         report: dict[str, Any],
     ) -> None:
         await self._db.rematch_relations.delete_many({"rematch_id": rematch_id})
@@ -1277,6 +1455,8 @@ class MongoRepository:
             status="completed",
             progress={"current": 1, "total": 1, "percent": 100, "stage": "completed"},
             report=report,
+            baseline_inferred_regions=baseline_inferred_regions,
+            candidate_inferred_regions=candidate_inferred_regions,
             completed_at=utc_now(),
         )
 
@@ -1388,6 +1568,10 @@ class MongoRepository:
         await self.update_rematch_run(rematch_id, status="applying")
         relations, records, entities = await self.load_rematch_snapshot(rematch_id=rematch_id)
         try:
+            await self.replace_inferred_color_plate_regions(
+                job_id,
+                list(run.get("candidate_inferred_regions") or []),
+            )
             await self.replace_job_relations(job_id, relations)
             await self.replace_job_records(job_id, records, preserve_reviews=True)
             await self.replace_job_entities(
@@ -1402,6 +1586,10 @@ class MongoRepository:
                     rematch_id=rematch_id,
                     snapshot_kind="baseline",
                 )
+            )
+            await self.replace_inferred_color_plate_regions(
+                job_id,
+                list(run.get("baseline_inferred_regions") or []),
             )
             await self.replace_job_relations(job_id, baseline_relations)
             await self.replace_job_records(job_id, baseline_records, preserve_reviews=True)
@@ -1503,6 +1691,34 @@ class MongoRepository:
         if record is None:
             raise NotFoundError("Extraction record does not exist")
         return record
+
+    async def patch_record_paragraph_enrichment(
+        self,
+        *,
+        job_id: str,
+        record_id: str,
+        fields: dict[str, Any],
+        text_evidence: list[dict[str, Any]],
+        region_ids: list[str],
+        enrichment_version: str,
+    ) -> None:
+        """Persist OCR-paragraph card upgrades without rewriting the whole record."""
+
+        now = utc_now()
+        result = await self._db.extraction_records.update_one(
+            {"_id": record_id, "job_id": job_id},
+            {
+                "$set": {
+                    "fields": fields,
+                    "text_evidence": text_evidence,
+                    "region_ids": region_ids,
+                    "paragraph_enrichment_version": enrichment_version,
+                    "updated_at": now,
+                }
+            },
+        )
+        if result.matched_count == 0:
+            raise NotFoundError("Extraction record does not exist")
 
     async def update_field_review(
         self,

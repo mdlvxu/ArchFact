@@ -43,6 +43,386 @@ from app.services.result_fusion import ResultFusionService
 
 router = APIRouter(prefix="/extraction-jobs", tags=["extraction-jobs"])
 
+_TEXT_PAGE_FIELD_WEIGHTS = {
+    "artifact_id": 3,
+    "category": 4,
+    "material": 6,
+    "surface_color": 6,
+    "texture": 6,
+    "surface_treatment": 6,
+    "measurements": 10,
+    "morphological_description": 12,
+    "figure_caption": 1,
+}
+
+
+def _has_field_value(field: object) -> bool:
+    if not isinstance(field, dict):
+        return False
+    value = field.get("value", field.get("raw_value"))
+    return value not in (None, "", [], {})
+
+
+def _candidate_evidence_pages(records: list[dict]) -> set[int]:
+    pages: set[int] = set()
+    for record in records:
+        for page in record.get("source_pages", []):
+            if isinstance(page, int):
+                pages.add(page)
+        for field in record.get("fields", {}).values():
+            if not isinstance(field, dict):
+                continue
+            for evidence in field.get("evidence", []):
+                if isinstance(evidence, dict) and isinstance(evidence.get("page"), int):
+                    pages.add(int(evidence["page"]))
+        for evidence in record.get("text_evidence", []):
+            if isinstance(evidence, dict) and isinstance(evidence.get("page"), int):
+                pages.add(int(evidence["page"]))
+    return pages
+
+
+def _select_primary_text_evidence(
+    records: list[dict],
+    selected_record: dict,
+    *,
+    color_plate_pages: set[int] | None = None,
+) -> tuple[dict, int]:
+    """Pick the entity page with the richest descriptive text evidence.
+
+    Color-plate pages may carry short captions, but the left preview column must
+    always prefer a non-color page when one exists. Every artifact is expected to
+    have non-color text evidence; color plates are optional third-column support.
+    """
+
+    color_plate_pages = color_plate_pages or set()
+    candidates: list[tuple[int, int, bool, int, dict]] = []
+    selected_id = str(selected_record["_id"])
+
+    for record in records:
+        page_scores: dict[int, int] = {}
+        page_field_counts: dict[int, int] = {}
+        for field_key, field in record.get("fields", {}).items():
+            if not _has_field_value(field):
+                continue
+            weight = _TEXT_PAGE_FIELD_WEIGHTS.get(field_key, 2)
+            evidence_pages = {
+                int(evidence["page"])
+                for evidence in field.get("evidence", [])
+                if isinstance(evidence, dict)
+                and isinstance(evidence.get("page"), int)
+                and evidence.get("kind", "text") == "text"
+            }
+            for page in evidence_pages:
+                page_scores[page] = page_scores.get(page, 0) + weight
+                page_field_counts[page] = page_field_counts.get(page, 0) + 1
+
+        for page in record.get("source_pages", []):
+            if isinstance(page, int):
+                page_scores.setdefault(page, 0)
+                page_field_counts.setdefault(page, 0)
+
+        for page, score in page_scores.items():
+            candidates.append(
+                (
+                    score,
+                    page_field_counts[page],
+                    str(record["_id"]) == selected_id,
+                    -page,
+                    record,
+                )
+            )
+
+    if not candidates:
+        fallback_page = next(
+            (
+                int(page)
+                for page in selected_record.get("source_pages", [])
+                if isinstance(page, int)
+            ),
+            1,
+        )
+        return selected_record, fallback_page
+
+    non_color_candidates = [
+        item for item in candidates if (-item[3]) not in color_plate_pages
+    ]
+    ranked = non_color_candidates or candidates
+    score, field_count, selected, negative_page, record = max(
+        ranked,
+        key=lambda item: item[:4],
+    )
+    del score, field_count, selected
+    return record, -negative_page
+
+
+async def _resolve_color_plate_pages(
+    container: Container,
+    *,
+    job_id: str,
+    document_id: str | None,
+    candidate_pages: set[int],
+) -> set[int]:
+    """Identify color-plate pages among evidence candidates."""
+
+    color_pages: set[int] = set()
+    if document_id:
+        for page in await container.repository.list_document_pages(document_id):
+            page_no = page.get("page_no")
+            if (
+                isinstance(page_no, int)
+                and page_no in candidate_pages
+                and page.get("page_type") == "color_plate"
+            ):
+                color_pages.add(page_no)
+
+    for page_no in sorted(candidate_pages):
+        if page_no in color_pages:
+            continue
+        regions = await container.repository.list_page_regions(job_id, page_no)
+        if any(region.get("kind") == "color_plate" for region in regions):
+            color_pages.add(page_no)
+    return color_pages
+
+
+def _record_evidence_region_ids(record: dict) -> set[str]:
+    region_ids: set[str] = set()
+    for field in record.get("fields", {}).values():
+        if not isinstance(field, dict):
+            continue
+        for evidence in field.get("evidence", []):
+            if not isinstance(evidence, dict):
+                continue
+            if evidence.get("region_id"):
+                region_ids.add(str(evidence["region_id"]))
+    for evidence in record.get("text_evidence", []):
+        if isinstance(evidence, dict) and evidence.get("region_id"):
+            region_ids.add(str(evidence["region_id"]))
+    return region_ids
+
+
+def _record_core_visual_region_ids(record: dict) -> set[str]:
+    return {
+        str(region_id)
+        for region_id in (
+            record.get("primary_number_region_id"),
+            record.get("primary_artifact_region_id"),
+            record.get("thumbnail_region_id"),
+        )
+        if region_id
+    }
+
+
+def _record_explicit_relation_ids(record: dict) -> set[str]:
+    relation_ids: set[str] = set()
+    if record.get("primary_relation_id"):
+        relation_ids.add(str(record["primary_relation_id"]))
+    for field in record.get("fields", {}).values():
+        if not isinstance(field, dict):
+            continue
+        for evidence in field.get("evidence", []):
+            if not isinstance(evidence, dict):
+                continue
+            relation_ids.update(
+                str(relation_id)
+                for relation_id in evidence.get("relation_ids", [])
+                if relation_id
+            )
+    return relation_ids
+
+
+def _select_relevant_evidence_relations(
+    relations: list[dict],
+    *,
+    evidence_region_ids: set[str],
+    core_visual_region_ids: set[str],
+    explicit_relation_ids: set[str],
+) -> list[dict]:
+    """Keep the local evidence graph without traversing the whole entity graph."""
+    structural_relation_types = {
+        "caption_to_number",
+        "number_of",
+        "caption_of",
+        "drawing_of",
+        "color_plate_of",
+        "plate_reference_to_color",
+        "image_of",
+    }
+    selected: list[dict] = []
+    for relation in relations:
+        relation_id = str(relation["_id"])
+        source_id = str(relation["source_region_id"])
+        target_id = str(relation["target_region_id"])
+        relation_type = relation.get("relation_type")
+        touches_core = (
+            source_id in core_visual_region_ids
+            or target_id in core_visual_region_ids
+        )
+        is_local_self_evidence = (
+            relation_type == "evidence_for"
+            and source_id == target_id
+            and source_id in evidence_region_ids
+        )
+        if (
+            relation_id in explicit_relation_ids
+            or is_local_self_evidence
+            or (
+                touches_core
+                and relation_type in structural_relation_types | {"evidence_for"}
+            )
+        ):
+            selected.append(relation)
+    return selected
+
+
+_CARD_ENRICHMENT_FIELD_KEYS = (
+    "category",
+    "texture",
+    "surface_color",
+    "morphological_description",
+    "measurements",
+    "figure_caption",
+)
+
+
+def _field_snapshot(fields: dict, key: str) -> tuple[str, str]:
+    field = fields.get(key) if isinstance(fields, dict) else None
+    if not isinstance(field, dict):
+        return ("", "")
+    return (
+        str(field.get("value") or "").strip(),
+        str(field.get("raw_value") or "").strip(),
+    )
+
+
+def _record_card_fields_changed(before: dict, after: dict) -> bool:
+    before_fields = before.get("fields", {}) if isinstance(before.get("fields"), dict) else {}
+    after_fields = after.get("fields", {}) if isinstance(after.get("fields"), dict) else {}
+    for key in _CARD_ENRICHMENT_FIELD_KEYS:
+        if _field_snapshot(before_fields, key) != _field_snapshot(after_fields, key):
+            return True
+    before_quotes = [
+        str(item.get("quote") or "")
+        for item in before.get("text_evidence", [])
+        if isinstance(item, dict)
+    ]
+    after_quotes = [
+        str(item.get("quote") or "")
+        for item in after.get("text_evidence", [])
+        if isinstance(item, dict)
+    ]
+    return before_quotes != after_quotes
+
+
+async def enrich_records_with_paragraph_fields(
+    container: Container,
+    job_id: str,
+    records: list[dict],
+    *,
+    persist: bool = True,
+) -> int:
+    """Fill/upgrade sparse card fields from OCR paragraphs.
+
+    Older jobs often store a truncated morphological_description (e.g. ``片状``)
+    while the full prose still exists in page OCR. Re-run deterministic paragraph
+    completion on read, and persist upgrades once per fusion version so export /
+    rematch baselines see the same card data as the UI.
+    """
+
+    if not records:
+        return 0
+    source_pages = sorted(
+        {
+            page
+            for record in records
+            for page in record.get("source_pages", [])
+            if isinstance(page, int)
+        }
+    )
+    if not source_pages:
+        return 0
+
+    persisted_regions: list[dict] = []
+    for page_no in source_pages:
+        persisted_regions.extend(
+            await container.repository.list_page_regions(job_id, page_no)
+        )
+    if not persisted_regions:
+        return 0
+
+    regions = [
+        {
+            **region,
+            "id": str(region.get("id") or region["_id"]),
+        }
+        for region in persisted_regions
+    ]
+    region_by_id = {str(region["id"]): region for region in regions}
+    before_by_id = {
+        str(record["_id"]): {
+            "fields": {
+                key: dict(field)
+                for key, field in (record.get("fields") or {}).items()
+                if isinstance(field, dict)
+            },
+            "text_evidence": list(record.get("text_evidence") or []),
+        }
+        for record in records
+        if record.get("_id")
+    }
+
+    ResultFusionService.complete_record_text_evidence(
+        records=records,
+        regions=regions,
+        region_by_id=region_by_id,
+    )
+    ResultFusionService.complete_multiline_figure_caption_evidence(
+        records=records,
+        regions=regions,
+        region_by_id=region_by_id,
+    )
+    ResultFusionService.prune_cross_artifact_field_evidence(
+        records=records,
+        region_by_id=region_by_id,
+    )
+
+    if not persist:
+        return 0
+
+    persisted = 0
+    enrichment_version = str(ResultFusionService.version)
+    for record in records:
+        record_id = str(record.get("_id") or "")
+        if not record_id:
+            continue
+        before = before_by_id.get(record_id)
+        if before is None:
+            continue
+        changed = _record_card_fields_changed(before, record)
+        already_enriched = record.get("paragraph_enrichment_version") == enrichment_version
+        if not changed and already_enriched:
+            continue
+        if not changed:
+            continue
+
+        region_ids: list[str] = []
+        seen_region_ids: set[str] = set()
+        for region_id in record.get("region_ids", []) or []:
+            value = str(region_id)
+            if value and value not in seen_region_ids:
+                seen_region_ids.add(value)
+                region_ids.append(value)
+        await container.repository.patch_record_paragraph_enrichment(
+            job_id=job_id,
+            record_id=record_id,
+            fields=record.get("fields") or {},
+            text_evidence=list(record.get("text_evidence") or []),
+            region_ids=region_ids,
+            enrichment_version=enrichment_version,
+        )
+        record["paragraph_enrichment_version"] = enrichment_version
+        persisted += 1
+    return persisted
+
 
 def build_record_view(record: dict, *, compact: bool = False) -> ExtractionRecordView:
     linkage = record.get("linkage", {})
@@ -132,6 +512,10 @@ def build_region_view(region: dict) -> SourceRegionView:
         ocr_version=region.get("ocr_version"),
         ocr_model_run_id=region.get("ocr_model_run_id"),
         ocr_error=region.get("ocr_error"),
+        approximate=bool(region.get("approximate", False)),
+        geometry_type=region.get("geometry_type"),
+        match_key=region.get("match_key"),
+        match_reason=region.get("match_reason"),
     )
 
 
@@ -242,11 +626,24 @@ def build_ai_verification_run_view(run: dict) -> AiVerificationRunView:
     )
 
 
+_TERMINAL_JOB_STATUSES = {
+    "completed",
+    "completed_with_warnings",
+    "failed",
+    "cancelled",
+}
+
+
 async def build_job_view(container: Container, job: dict) -> ExtractionJobView:
     events = await container.repository.list_events(
         job["_id"],
         container.settings.job_event_limit,
     )
+    completed_at = job.get("completed_at")
+    # Legacy jobs finished before completed_at existed: prefer the last extraction
+    # event over updated_at (which rematch/apply can refresh days later).
+    if completed_at is None and job.get("status") in _TERMINAL_JOB_STATUSES:
+        completed_at = events[-1]["created_at"] if events else job.get("updated_at")
     return ExtractionJobView(
         id=job["_id"],
         document_id=job["document_id"],
@@ -266,6 +663,7 @@ async def build_job_view(container: Container, job: dict) -> ExtractionJobView:
         created_at=job["created_at"],
         updated_at=job["updated_at"],
         attempt_started_at=job.get("attempt_started_at"),
+        completed_at=completed_at,
         retry_pages=job.get("retry_pages", []),
         events=[
             JobEventView(
@@ -461,6 +859,7 @@ async def list_extraction_records(
         page=page,
         page_size=page_size,
     )
+    await enrich_records_with_paragraph_fields(container, job_id, records)
     return ApiResponse(
         data=ExtractionRecordPage(
             items=[build_record_view(record, compact=compact) for record in records],
@@ -495,82 +894,129 @@ async def get_record_evidence_context(
     record_id: str,
     container: Annotated[Container, Depends(get_container)],
 ) -> ApiResponse[RecordEvidenceContextView]:
-    await container.repository.get_job(job_id)
+    job = await container.repository.get_job(job_id)
     record = await container.repository.get_record(job_id, record_id)
-
-    # Older extraction results may contain only the first OCR line of a wrapped
-    # figure/plate reference. Complete it in the response as well as during new
-    # fusion runs, so an existing job becomes correct as soon as it is reopened.
-    source_pages = {
-        page
-        for page in record.get("source_pages", [])
-        if isinstance(page, int)
-    }
-    for field_key in ("figure_caption", "artifact_id"):
-        field = record.get("fields", {}).get(field_key, {})
-        if not isinstance(field, dict):
-            continue
-        source_pages.update(
-            evidence["page"]
-            for evidence in field.get("evidence", [])
-            if isinstance(evidence, dict) and isinstance(evidence.get("page"), int)
-        )
-    persisted_source_regions = []
-    for page_no in sorted(source_pages):
-        persisted_source_regions.extend(
-            await container.repository.list_page_regions(job_id, page_no)
-        )
-    source_regions = [
-        {
-            **region,
-            "id": str(region.get("id") or region["_id"]),
-        }
-        for region in persisted_source_regions
-    ]
-    if source_regions:
-        ResultFusionService.complete_record_text_evidence(
-            records=[record],
-            regions=source_regions,
-            region_by_id={str(region["id"]): region for region in source_regions},
-        )
-        ResultFusionService.complete_multiline_figure_caption_evidence(
-            records=[record],
-            regions=source_regions,
-            region_by_id={str(region["id"]): region for region in source_regions},
-        )
-
-    region_ids = set(record.get("region_ids", []))
-    relation_ids = set(record.get("relation_ids", []))
     entity = None
+    entity_records = [record]
     if record.get("entity_id"):
         entity = await container.repository.get_entity(job_id, record["entity_id"])
         if entity is not None:
-            region_ids.update(entity.get("region_ids", []))
-            relation_ids.update(entity.get("relation_ids", []))
-    for field in record.get("fields", {}).values():
-        for evidence in field.get("evidence", []):
-            if evidence.get("region_id"):
-                region_ids.add(evidence["region_id"])
-            region_ids.update(evidence.get("linked_region_ids", []))
-            relation_ids.update(evidence.get("relation_ids", []))
+            siblings = await container.repository.list_records_by_ids(
+                job_id,
+                entity.get("record_ids", []),
+            )
+            sibling_by_id = {str(sibling["_id"]): sibling for sibling in siblings}
+            sibling_by_id[str(record["_id"])] = record
+            entity_records = list(sibling_by_id.values())
 
-    relations = await container.repository.list_relations_by_ids(
-        job_id,
-        sorted(relation_ids),
+    # Also treat entity-associated pages as candidates so linked color plates are
+    # excluded even when the selected record itself is non-color.
+    candidate_pages = _candidate_evidence_pages(entity_records)
+    if entity is not None:
+        for page in entity.get("associated_pages", []):
+            if isinstance(page, int):
+                candidate_pages.add(page)
+
+    text_record, primary_text_page = _select_primary_text_evidence(
+        entity_records,
+        record,
+        color_plate_pages=await _resolve_color_plate_pages(
+            container,
+            job_id=job_id,
+            document_id=str(job.get("document_id") or "") or None,
+            candidate_pages=candidate_pages,
+        ),
     )
+
+    # Older extraction results may contain only the first OCR line of a wrapped
+    # figure/plate reference, or a truncated morphological_description. Complete
+    # and persist those card fields so reopen/export match the text evidence panel.
+    context_records = list(
+        {str(item["_id"]): item for item in (record, text_record)}.values()
+    )
+    await enrich_records_with_paragraph_fields(
+        container,
+        job_id,
+        context_records,
+        persist=True,
+    )
+    # Keep local aliases in sync when record/text_record are distinct objects.
+    refreshed = {str(item["_id"]): item for item in context_records}
+    if str(record.get("_id")) in refreshed:
+        record = refreshed[str(record["_id"])]
+    if str(text_record.get("_id")) in refreshed:
+        text_record = refreshed[str(text_record["_id"])]
+    context_records = list(refreshed.values())
+    evidence_region_ids = set().union(
+        *(_record_evidence_region_ids(candidate) for candidate in context_records)
+    )
+    core_visual_region_ids = set().union(
+        *(_record_core_visual_region_ids(candidate) for candidate in context_records)
+    )
+    explicit_relation_ids = set().union(
+        *(_record_explicit_relation_ids(candidate) for candidate in context_records)
+    )
+    candidate_relation_ids = set(record.get("relation_ids", []))
+    candidate_relation_ids.update(text_record.get("relation_ids", []))
+    if entity is not None:
+        candidate_relation_ids.update(entity.get("relation_ids", []))
+
+    candidate_relations = await container.repository.list_relations_by_ids(
+        job_id,
+        sorted(candidate_relation_ids),
+    )
+    relations = _select_relevant_evidence_relations(
+        candidate_relations,
+        evidence_region_ids=evidence_region_ids,
+        core_visual_region_ids=core_visual_region_ids,
+        explicit_relation_ids=explicit_relation_ids,
+    )
+
+    region_ids = evidence_region_ids | core_visual_region_ids
+    for candidate in (record, text_record):
+        for field in candidate.get("fields", {}).values():
+            for evidence in field.get("evidence", []):
+                if evidence.get("region_id"):
+                    region_ids.add(evidence["region_id"])
     for relation in relations:
         region_ids.add(relation["source_region_id"])
         region_ids.add(relation["target_region_id"])
     regions = await container.repository.list_regions_by_ids(job_id, sorted(region_ids))
     page_numbers = sorted(
         set(record.get("source_pages", []))
-        | set(entity.get("associated_pages", []) if entity else [])
+        | set(text_record.get("source_pages", []))
         | {int(region["page"]) for region in regions}
+    )
+    relevant_region_ids = sorted(region_ids)
+    relevant_relation_ids = [str(relation["_id"]) for relation in relations]
+    context_record = {
+        **record,
+        "region_ids": relevant_region_ids,
+        "relation_ids": relevant_relation_ids,
+        "associated_pages": page_numbers,
+    }
+    context_text_record = {
+        **text_record,
+        "region_ids": relevant_region_ids,
+        "relation_ids": relevant_relation_ids,
+        "associated_pages": page_numbers,
+    }
+    context_entity = (
+        {
+            **entity,
+            "region_ids": relevant_region_ids,
+            "relation_ids": relevant_relation_ids,
+            "associated_pages": page_numbers,
+        }
+        if entity
+        else None
     )
     return ApiResponse(
         data=RecordEvidenceContextView(
-            record=build_record_view(record),
-            entity=build_entity_view(entity) if entity else None,
+            record=build_record_view(context_record),
+            text_record=build_record_view(context_text_record),
+            primary_text_page=primary_text_page,
+            entity=build_entity_view(context_entity) if context_entity else None,
             page_numbers=page_numbers,
             regions=[build_region_view(region) for region in regions],
             relations=[build_relation_view(relation) for relation in relations],

@@ -583,7 +583,7 @@ describe('Data Preview redesigned interactions', () => {
     ).toBe(true)
   })
 
-  it('adds a centered third color-plate column without shrinking the first two columns', () => {
+  it('shows the full color-plate page without a region mark or changing the text page', async () => {
     const textAnnotation: PreviewAnnotation = {
       ...annotations[1]!,
       id: 'color-layout-text',
@@ -604,7 +604,8 @@ describe('Data Preview redesigned interactions', () => {
       page: 10,
       kind: 'color_plate',
       bbox: [0.32, 0.28, 0.56, 0.62],
-      cropUrl: '/api/v1/extraction-jobs/job-1/regions/color-layout-plate-region/crop',
+      approximate: true,
+      source: 'ocr_identifier_inference',
     }
     const lineRegion = region('color-layout-line-region', 'artifact', lineAnnotation.bbox)
     lineRegion.page = 9
@@ -632,11 +633,22 @@ describe('Data Preview redesigned interactions', () => {
       },
     })
 
-    expect(wrapper.find('.annotation-canvas').attributes('style')).toContain('width: 1400px')
+    const colorCanvasStyle = wrapper.find('.annotation-canvas').attributes('style')
+    expect(colorCanvasStyle).toContain('width: 1000px')
+    expect(Number.parseFloat(
+      colorCanvasStyle.match(/height:\s*([\d.]+)px/)?.[1] ?? '0',
+    )).toBeCloseTo(571.43, 1)
     expect(wrapper.find('.evidence-targets').classes()).toContain('evidence-targets--has-color')
     expect(wrapper.find('.evidence-targets').classes()).toContain('evidence-targets--staggered')
     expect(wrapper.find('.evidence-target--color_plate img').attributes('src'))
       .toBe('data:image/png;base64,color-page')
+    expect(wrapper.find('.evidence-target--color_plate img').classes())
+      .toContain('evidence-target__color-image')
+    expect(wrapper.find('.evidence-target--color_plate .evidence-target__region-box').exists())
+      .toBe(false)
+    expect(wrapper.find('.evidence-target__inferred-badge').text()).toBe('ID matched')
+    expect(wrapper.find('.evidence-target--color_plate small').text())
+      .toContain('Color plate located by an exact artifact identifier')
     expect(wrapper.findAll('.relation-lines path')).toHaveLength(5)
     expect(
       wrapper.find('.relation-lines g[data-relation-key^="card:line_to_color_plate:"]').exists(),
@@ -644,6 +656,93 @@ describe('Data Preview redesigned interactions', () => {
     expect(
       wrapper.find('.relation-lines g[data-relation-key^="card:crop_to_color_plate:"]').exists(),
     ).toBe(true)
+    await wrapper.find('.evidence-target--color_plate').trigger('click')
+    expect(wrapper.emitted('selectAnnotation')?.[0]).toEqual([colorAnnotation.id])
+    await wrapper.setProps({ activeAnnotationId: colorAnnotation.id })
+    expect(wrapper.find('.evidence-target--color_plate').classes())
+      .toContain('evidence-target--active')
+    expect(wrapper.find('.document-surface .pdf-page').attributes('src'))
+      .toBe('data:image/png;base64,current-page')
+  })
+
+  it('prioritizes a color page linked by an exact plate/item text reference', () => {
+    const textAnnotation: PreviewAnnotation = {
+      ...annotations[1]!,
+      id: 'plate-reference-text',
+      regionId: 'plate-reference-text-region',
+    }
+    const lineAnnotation: PreviewAnnotation = {
+      ...annotations[0]!,
+      id: 'plate-reference-line',
+      regionId: 'plate-reference-line-region',
+      page: 9,
+      cropUrl: '/api/v1/regions/plate-reference-line-region/crop',
+      primaryArtifact: true,
+    }
+    const unrelatedColor: PreviewAnnotation = {
+      ...annotations[0]!,
+      id: 'unrelated-color',
+      regionId: 'unrelated-color-region',
+      page: 10,
+      kind: 'color_plate',
+      cropUrl: '/api/v1/regions/unrelated-color-region/crop',
+    }
+    const referencedColor: PreviewAnnotation = {
+      ...annotations[0]!,
+      id: 'referenced-color',
+      regionId: 'referenced-color-region',
+      page: 11,
+      kind: 'color_plate',
+    }
+    const plateRelation: RegionRelation = {
+      id: 'plate-reference-relation',
+      job_id: 'job-1',
+      source_region_id: 'plate-reference-text-region',
+      target_region_id: 'referenced-color-region',
+      relation_type: 'plate_reference_to_color',
+      score: 0.96,
+      method: 'exact_plate_item_reference',
+      version: '12',
+      model_run_id: null,
+      review_status: 'unreviewed',
+    }
+    const wrapper = mount(ContentPreview, {
+      props: {
+        page: 8,
+        previewUrl: 'data:image/png;base64,current-page',
+        pagePreviewUrls: {
+          9: 'data:image/png;base64,line-page',
+          10: 'data:image/png;base64,unrelated-color-page',
+          11: 'data:image/png;base64,referenced-color-page',
+        },
+        fileName: 'catalog.pdf',
+        loading: false,
+        interactive: true,
+        annotations: [
+          textAnnotation,
+          lineAnnotation,
+          unrelatedColor,
+          referencedColor,
+        ],
+        regions: [
+          region('plate-reference-text-region', 'text', textAnnotation.bbox),
+          region('plate-reference-line-region', 'artifact', lineAnnotation.bbox),
+          region('unrelated-color-region', 'color_plate', unrelatedColor.bbox),
+          region('referenced-color-region', 'color_plate', referencedColor.bbox),
+        ],
+        relations: [plateRelation],
+        activeAnnotationId: textAnnotation.id,
+      },
+    })
+
+    expect(wrapper.find('.evidence-target--color_plate img').attributes('src'))
+      .toBe('data:image/png;base64,referenced-color-page')
+    expect(wrapper.find('.evidence-target__inferred-badge').text())
+      .toBe('Plate reference matched')
+    expect(wrapper.find('.evidence-target--color_plate small').text())
+      .toContain('Color plate located by an exact plate and item reference')
+    expect(wrapper.find('.relation-review__type').text())
+      .toBe('plate reference to color')
   })
 
   it('terminates a cross-page line on the highlighted artifact box, not the page card', async () => {

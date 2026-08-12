@@ -52,23 +52,28 @@ const rebindMode = ref(false)
 const failedTargetImages = ref<Partial<Record<TargetCardKind, boolean>>>({})
 const previewStageRef = ref<HTMLElement>()
 const zoomContentRef = ref<HTMLElement>()
+const isPanning = ref(false)
 const previewAspectRatio = ref(0.735)
 const previewStageSize = ref({ width: 1000, height: 800 })
-const canvasAspectRatio = 1.25
 let zoomAnimation: Animation | undefined
 let previewResizeObserver: ResizeObserver | undefined
+let panStart:
+  | {
+      pointerId: number
+      x: number
+      y: number
+      scrollLeft: number
+      scrollTop: number
+      moved: boolean
+    }
+  | undefined
+let suppressPanClick = false
 const zoomText = computed(() => `${Math.round(zoom.value * 100)}%`)
 function isSequenceAnnotation(annotation: PreviewAnnotation) {
   return annotation.regionKind === 'number'
 }
 const visiblePageAnnotations = computed(() =>
   props.annotations.filter((annotation) => !isSequenceAnnotation(annotation)),
-)
-const activeAnnotation = computed(
-  () =>
-    visiblePageAnnotations.value.find(
-      (annotation) => annotation.id === props.activeAnnotationId,
-    ) ?? visiblePageAnnotations.value[0],
 )
 const allAnnotations = computed(() => {
   const byId = new Map<string, PreviewAnnotation>()
@@ -78,6 +83,12 @@ const allAnnotations = computed(() => {
   }
   return [...byId.values()]
 })
+const activeAnnotation = computed(
+  () =>
+    allAnnotations.value.find(
+      (annotation) => annotation.id === props.activeAnnotationId,
+    ) ?? visiblePageAnnotations.value[0],
+)
 const regionById = computed(() => new Map(props.regions.map((region) => [region.id, region])))
 const structuralRelationTypes = new Set(['contains', 'caption_of_group'])
 
@@ -88,6 +99,7 @@ function relationPriority(relation: RegionRelation) {
     number_of: 50,
     drawing_of: 45,
     color_plate_of: 40,
+    plate_reference_to_color: 40,
     image_of: 40,
   }
   const reviewPriority =
@@ -189,13 +201,19 @@ const colorPlateAnnotation = computed(() => {
   return [...candidates].sort((left, right) => {
     const score = (annotation: PreviewAnnotation) => {
       const related = props.relations.some(
-        (relation) =>
-          ['color_plate_of', 'image_of'].includes(relation.relation_type) &&
-          (relation.source_region_id === annotation.regionId ||
-            relation.target_region_id === annotation.regionId) &&
-          (!artifactRegionId ||
-            relation.source_region_id === artifactRegionId ||
-            relation.target_region_id === artifactRegionId),
+        (relation) => {
+          const touchesColor =
+            relation.source_region_id === annotation.regionId ||
+            relation.target_region_id === annotation.regionId
+          if (!touchesColor) return false
+          if (relation.relation_type === 'plate_reference_to_color') return true
+          return (
+            ['color_plate_of', 'image_of'].includes(relation.relation_type) &&
+            (!artifactRegionId ||
+              relation.source_region_id === artifactRegionId ||
+              relation.target_region_id === artifactRegionId)
+          )
+        },
       )
       return (related ? 100 : 0) +
         (selectedRecordId && annotation.recordId === selectedRecordId ? 40 : 0) +
@@ -203,6 +221,19 @@ const colorPlateAnnotation = computed(() => {
     }
     return score(right) - score(left)
   })[0]
+})
+
+const colorPlateReferenceMatched = computed(() => {
+  const colorRegionId = colorPlateAnnotation.value?.regionId
+  if (!colorRegionId) return false
+  return props.relations.some(
+    (relation) =>
+      relation.relation_type === 'plate_reference_to_color' &&
+      (
+        relation.source_region_id === colorRegionId ||
+        relation.target_region_id === colorRegionId
+      ),
+  )
 })
 
 const canvasVirtualWidth = computed(() => colorPlateAnnotation.value ? 1400 : 1000)
@@ -230,7 +261,11 @@ const visibleTargetCards = computed<PreviewTargetCard[]>(() => {
     cards.push({
       kind: 'color_plate',
       title: t('preview.colorPlate'),
-      description: t('preview.colorDescription'),
+      description: colorPlateReferenceMatched.value
+        ? t('preview.plateReferenceDescription')
+        : colorPlateAnnotation.value.approximate
+        ? t('preview.inferredColorDescription')
+        : t('preview.colorDescription'),
       annotation: colorPlateAnnotation.value,
     })
   }
@@ -330,10 +365,11 @@ const documentImageFrame = computed(() => {
 const annotationCanvasStyle = computed(() => {
   const availableWidth = Math.max(1, previewStageSize.value.width)
   const availableHeight = Math.max(1, previewStageSize.value.height)
-  const baseWidth = Math.min(availableWidth, availableHeight * canvasAspectRatio)
-  const baseHeight = baseWidth / canvasAspectRatio
+  const virtualAspectRatio = canvasVirtualWidth.value / 800
+  const baseWidth = Math.min(availableWidth, availableHeight * virtualAspectRatio)
+  const baseHeight = baseWidth / virtualAspectRatio
   return {
-    width: `${baseHeight * (canvasVirtualWidth.value / 800) * zoom.value}px`,
+    width: `${baseWidth * zoom.value}px`,
     height: `${baseHeight * zoom.value}px`,
   }
 })
@@ -386,8 +422,13 @@ function clusterTextEvidence(annotations: PreviewAnnotation[]) {
  * must never hide the artifact-description line that contains its identifier.
  */
 const displayAnnotations = computed<PreviewAnnotation[]>(() => {
+  const activeRecordId = activeAnnotation.value?.recordId
   const selectedRecordId =
-    activeAnnotation.value?.recordId ?? props.annotations.find((item) => item.recordId)?.recordId
+    (activeRecordId &&
+      visiblePageAnnotations.value.some((annotation) => annotation.recordId === activeRecordId)
+      ? activeRecordId
+      : undefined) ??
+    props.annotations.find((item) => item.recordId)?.recordId
   const relevant = selectedRecordId
     ? visiblePageAnnotations.value.filter((annotation) => annotation.recordId === selectedRecordId)
     : visiblePageAnnotations.value
@@ -683,7 +724,7 @@ function fallbackTargetRegionRect(kind: TargetCardKind): RelationRect {
     right: card.right - 8,
     bottom: card.bottom - 27,
   }
-  if (kind === 'artifact_crop') return frame
+  if (kind === 'artifact_crop' || kind === 'color_plate') return frame
   const viewport = targetFocusViewport(kind)
   const [left, top, right, bottom] = annotation.bbox
   const frameWidth = frame.right - frame.left
@@ -934,6 +975,68 @@ function resetZoom() {
   return setZoom(1)
 }
 
+function startPreviewPan(event: PointerEvent) {
+  if (event.button !== 0) return
+  const stage = previewStageRef.value
+  const target = event.target
+  if (
+    !stage ||
+    !(target instanceof Element) ||
+    target.closest('.evidence-box')
+  ) {
+    return
+  }
+
+  panStart = {
+    pointerId: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    scrollLeft: stage.scrollLeft,
+    scrollTop: stage.scrollTop,
+    moved: false,
+  }
+}
+
+function movePreviewPan(event: PointerEvent) {
+  const stage = previewStageRef.value
+  if (!stage || !panStart || panStart.pointerId !== event.pointerId) return
+  const deltaX = event.clientX - panStart.x
+  const deltaY = event.clientY - panStart.y
+  if (!panStart.moved && Math.hypot(deltaX, deltaY) >= 3) {
+    panStart.moved = true
+    isPanning.value = true
+    stage.setPointerCapture(event.pointerId)
+  }
+  if (panStart.moved) {
+    stage.scrollLeft = panStart.scrollLeft - deltaX
+    stage.scrollTop = panStart.scrollTop - deltaY
+  }
+  event.preventDefault()
+}
+
+function stopPreviewPan(event: PointerEvent) {
+  const stage = previewStageRef.value
+  if (!panStart || panStart.pointerId !== event.pointerId) return
+  suppressPanClick = panStart.moved
+  if (suppressPanClick) {
+    globalThis.setTimeout(() => {
+      suppressPanClick = false
+    }, 0)
+  }
+  if (stage?.hasPointerCapture(event.pointerId)) {
+    stage.releasePointerCapture(event.pointerId)
+  }
+  panStart = undefined
+  isPanning.value = false
+}
+
+function handlePreviewStageClick(event: MouseEvent) {
+  if (!suppressPanClick) return
+  suppressPanClick = false
+  event.preventDefault()
+  event.stopPropagation()
+}
+
 function handlePreviewImageLoad(event: Event) {
   const image = event.currentTarget as HTMLImageElement
   if (image.naturalWidth > 0 && image.naturalHeight > 0) {
@@ -977,6 +1080,14 @@ function toggleRebindMode() {
 }
 
 function selectTarget(kind: TargetCardKind) {
+  // The color plate is page-level supporting evidence. It stays in the third
+  // column and selecting it only changes the active evidence, never the full
+  // text-evidence page on the left.
+  if (kind === 'color_plate') {
+    const annotation = colorPlateAnnotation.value
+    if (annotation) selectAnnotation(annotation.id)
+    return
+  }
   if (kind === 'artifact_crop') {
     const annotation = artifactCropAnnotation.value
     if (annotation) selectAnnotation(annotation.id)
@@ -1038,8 +1149,8 @@ async function syncTargetRegionRects() {
   for (const card of visibleTargetCards.value) {
     const annotation = card.annotation
     const box = canvas.querySelector<HTMLElement>(
-      card.kind === 'artifact_crop'
-        ? '.evidence-target--artifact_crop .evidence-target__image-frame'
+      card.kind === 'artifact_crop' || card.kind === 'color_plate'
+        ? `.evidence-target--${card.kind} .evidence-target__image-frame`
         : `.evidence-target--${card.kind} .evidence-target__region-box`,
     )
     if (!annotation || !box) continue
@@ -1082,6 +1193,7 @@ watch(
     .join('|'),
   () => {
     failedTargetImages.value = {}
+    void centerPreview('auto')
   },
 )
 
@@ -1281,6 +1393,12 @@ onBeforeUnmount(() => {
         v-else-if="previewUrl"
         ref="previewStageRef"
         class="pdf-page-stage"
+        :class="{ 'pdf-page-stage--panning': isPanning }"
+        @pointerdown="startPreviewPan"
+        @pointermove="movePreviewPan"
+        @pointerup="stopPreviewPan"
+        @pointercancel="stopPreviewPan"
+        @click.capture="handlePreviewStageClick"
       >
         <div
           v-if="interactive"
@@ -1296,6 +1414,7 @@ onBeforeUnmount(() => {
               class="pdf-page"
               :src="previewUrl"
               :alt="t('preview.pageAlt', { name: fileName, page })"
+              draggable="false"
               @load="handlePreviewImageLoad"
             >
             <button
@@ -1368,7 +1487,20 @@ onBeforeUnmount(() => {
               ]"
               @click="selectTarget(card.kind)"
             >
-              <span class="evidence-target__tag">{{ card.title }}</span>
+              <span class="evidence-target__tag">
+                {{ card.title }}
+                <em
+                  v-if="
+                    card.kind === 'color_plate' &&
+                    (card.annotation.approximate || colorPlateReferenceMatched)
+                  "
+                  class="evidence-target__inferred-badge"
+                >{{
+                  colorPlateReferenceMatched
+                    ? t('preview.plateReferenceMatched')
+                    : t('preview.identifierMatched')
+                }}</em>
+              </span>
               <span class="evidence-target__image-frame">
                 <img
                   v-if="!failedTargetImages[card.kind]"
@@ -1388,7 +1520,7 @@ onBeforeUnmount(() => {
                   class="evidence-target__image-error"
                 >{{ t('preview.imageUnavailable') }}</span>
                 <i
-                  v-if="card.kind !== 'artifact_crop'"
+                  v-if="card.kind === 'line_drawing'"
                   class="evidence-target__region-box"
                   :class="`evidence-target__region-box--${card.kind}`"
                   :style="targetAnnotationStyle(card.kind)"
@@ -1414,6 +1546,7 @@ onBeforeUnmount(() => {
             class="pdf-page"
             :src="previewUrl"
             :alt="t('preview.pageAlt', { name: fileName, page })"
+            draggable="false"
             @load="handlePreviewImageLoad"
           >
         </div>
@@ -1650,8 +1783,24 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   overflow: auto;
+  cursor: grab;
+  overscroll-behavior: contain;
   scrollbar-color: #cfc5bb transparent;
   scrollbar-width: thin;
+}
+
+.pdf-page-stage--panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.pdf-page-stage .evidence-target {
+  cursor: grab;
+}
+
+.pdf-page-stage--panning,
+.pdf-page-stage--panning * {
+  cursor: grabbing !important;
 }
 
 .pdf-page-frame {
@@ -1772,7 +1921,7 @@ onBeforeUnmount(() => {
 }
 
 .evidence-target--color_plate .evidence-target__tag {
-  background: #59bdd4;
+  background: #c97916;
 }
 
 .evidence-box--region-caption {
@@ -1933,10 +2082,19 @@ onBeforeUnmount(() => {
   position: absolute;
   top: 6px;
   left: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   padding: 2px 8px;
   font-size: 9px;
   color: #fff;
   border-radius: 9px;
+}
+
+.evidence-target__inferred-badge {
+  padding-left: 5px;
+  font-style: normal;
+  border-left: 1px solid rgb(255 255 255 / 55%);
 }
 
 .evidence-target__image-frame {
@@ -1967,11 +2125,6 @@ onBeforeUnmount(() => {
   border: 2px solid #e98e94;
 }
 
-.evidence-target__region-box--color_plate {
-  background: rgb(89 189 212 / 18%);
-  border-color: #59bdd4;
-}
-
 .evidence-target .evidence-target__crop-image {
   position: static;
   width: 100%;
@@ -1983,7 +2136,24 @@ onBeforeUnmount(() => {
 }
 
 .evidence-target .evidence-target__color-image {
+  position: static;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  object-fit: contain;
   filter: saturate(1.14) contrast(0.98);
+  background: #fff;
+}
+
+.evidence-target--color_plate {
+  cursor: default;
+}
+
+.evidence-target--color_plate.evidence-target--active {
+  border-color: #c97916;
+  box-shadow:
+    0 0 0 2px rgb(201 121 22 / 22%),
+    0 3px 10px rgb(176 110 20 / 13%);
 }
 
 .evidence-target__image-error {

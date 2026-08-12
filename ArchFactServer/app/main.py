@@ -19,6 +19,14 @@ settings = get_settings()
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     container = await build_container(settings)
     app.state.container = container
+    stale_jobs = await container.repository.mark_stale_active_extraction_jobs()
+    if stale_jobs:
+        # Local in-memory dispatchers cannot resume after process restart.
+        print(f"Marked {stale_jobs} stale extraction job(s) as failed after restart")
+    stale_rematches = await container.repository.mark_stale_active_rematch_runs()
+    if stale_rematches:
+        # Local in-memory dispatchers cannot resume after process restart.
+        print(f"Marked {stale_rematches} stale rematch run(s) as failed after restart")
     try:
         yield
     finally:

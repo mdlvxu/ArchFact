@@ -182,6 +182,8 @@ class ExtractionJobView(BaseModel):
     created_at: datetime
     updated_at: datetime
     attempt_started_at: datetime | None = None
+    # Extraction finish time. Distinct from updated_at, which rematch/apply may bump later.
+    completed_at: datetime | None = None
     events: list[JobEventView] = Field(default_factory=list)
     page_issues: list[PageIssueView] = Field(default_factory=list)
     succeeded_pages: int = 0
@@ -253,6 +255,10 @@ class SourceRegionView(BaseModel):
     ocr_version: str | None = None
     ocr_model_run_id: str | None = None
     ocr_error: str | None = None
+    approximate: bool = False
+    geometry_type: str | None = None
+    match_key: str | None = None
+    match_reason: str | None = None
 
 
 class RegionRelationView(BaseModel):
@@ -425,6 +431,8 @@ class PageAnnotationView(BaseModel):
 
 class RecordEvidenceContextView(BaseModel):
     record: ExtractionRecordView
+    text_record: ExtractionRecordView
+    primary_text_page: int
     entity: ArtifactEntityView | None = None
     page_numbers: list[int]
     regions: list[SourceRegionView]

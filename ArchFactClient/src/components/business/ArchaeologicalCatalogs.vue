@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getRegionCropContentUrl } from '@/api/modules/extraction'
+import {
+  catalogCategoryText,
+  catalogMorphologyText,
+  catalogTextureText,
+} from '@/domain/catalog-records'
 import { useI18n } from '@/i18n'
 import type { ExtractionRecord } from '@/types/extraction'
 import type { PdfPageItem } from '@/types/pdf'
@@ -75,6 +80,14 @@ const failureMenuRef = ref<HTMLDetailsElement | HTMLDetailsElement[]>()
 const failureEditorRecordId = ref('')
 const failureCode = ref<VerificationFailureCode>('other')
 const failureReason = ref('')
+const brokenThumbnailIds = ref(new Set<string>())
+
+watch(
+  () => [props.jobId, props.records.map((record) => record.id).join('|')] as const,
+  () => {
+    brokenThumbnailIds.value = new Set()
+  },
+)
 
 const failureOptions: Array<{ value: VerificationFailureCode; labelKey: string }> = [
   { value: 'field_error', labelKey: 'catalog.failure.field' },
@@ -304,6 +317,19 @@ function fieldValue(record: ExtractionRecord, keys: string[]) {
   return ''
 }
 
+function detailFieldValue(record: ExtractionRecord, key: string, value: unknown) {
+  if (key === 'morphological_description') {
+    return catalogMorphologyText(record) || displayValue(value)
+  }
+  if (key === 'category') {
+    return catalogCategoryText(record) || displayValue(value)
+  }
+  if (key === 'texture') {
+    return catalogTextureText(record) || displayValue(value)
+  }
+  return displayValue(value)
+}
+
 function recordTitle(record: ExtractionRecord) {
   return (
     fieldValue(record, ['artifact_id', 'context_id', 'figure_caption']) ||
@@ -312,11 +338,18 @@ function recordTitle(record: ExtractionRecord) {
 }
 
 function recordSubtitle(record: ExtractionRecord) {
-  return fieldValue(record, ['category', 'type', 'subtype']) || t('common.page', { page: record.source_pages[0] ?? '—' })
+  return (
+    catalogCategoryText(record) ||
+    t('common.page', { page: record.source_pages[0] ?? '—' })
+  )
 }
 
 function recordTexture(record: ExtractionRecord) {
-  return fieldValue(record, ['texture', 'surface_color', 'material', 'page_text'])
+  return catalogTextureText(record)
+}
+
+function recordMorphology(record: ExtractionRecord) {
+  return catalogMorphologyText(record)
 }
 
 function recordMeasurements(record: ExtractionRecord) {
@@ -324,6 +357,7 @@ function recordMeasurements(record: ExtractionRecord) {
 }
 
 function pageThumbnail(record: ExtractionRecord) {
+  if (brokenThumbnailIds.value.has(record.id)) return ''
   if (props.jobId && record.thumbnail_region_id) {
     return getRegionCropContentUrl(props.jobId, record.thumbnail_region_id)
   }
@@ -338,6 +372,10 @@ function pageThumbnail(record: ExtractionRecord) {
   // 器物目录只能展示区域裁剪图；没有匹配区域时使用占位图，避免把整页 PDF
   // 误认为某一件器物的图片。
   return ''
+}
+
+function markThumbnailBroken(record: ExtractionRecord) {
+  brokenThumbnailIds.value.add(record.id)
 }
 
 function isFigureCaptionConflictWarning(warning: string) {
@@ -608,11 +646,12 @@ function recordVerificationItem(record: ExtractionRecord) {
                     v-if="pageThumbnail(record)"
                     :src="pageThumbnail(record)"
                     :alt="displayValue(entry.field.value)"
+                    @error="markThumbnailBroken(record)"
                   >
                   <span>{{ displayValue(entry.field.value) }}</span>
                 </dd>
                 <dd v-else>
-                  {{ displayValue(entry.field.value) }}
+                  {{ detailFieldValue(record, entry.key, entry.field.value) }}
                 </dd>
               </div>
             </dl>
@@ -668,6 +707,7 @@ function recordVerificationItem(record: ExtractionRecord) {
                 v-if="pageThumbnail(record)"
                 :src="pageThumbnail(record)"
                 alt=""
+                @error="markThumbnailBroken(record)"
               >
               <svg
                 v-else
@@ -686,6 +726,13 @@ function recordVerificationItem(record: ExtractionRecord) {
                 :title="recordTexture(record)"
               >
                 {{ t('catalog.texture') }} : {{ recordTexture(record) }}
+              </small>
+              <small
+                v-if="recordMorphology(record)"
+                class="catalog-item__description"
+                :title="recordMorphology(record)"
+              >
+                {{ t('catalog.morphology') }} : {{ recordMorphology(record) }}
               </small>
               <small
                 v-if="recordMeasurements(record)"
@@ -1505,6 +1552,14 @@ function recordVerificationItem(record: ExtractionRecord) {
   color: #586170;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.catalog-item__content small.catalog-item__description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  text-overflow: unset;
 }
 
 .review-status {

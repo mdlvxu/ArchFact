@@ -49,6 +49,23 @@ describe('Processing Progress metrics', () => {
     expect(metrics.processingRate).toBe('2 pages/min')
   })
 
+  it('does not inflate elapsed when wall clock is far past a frozen end time', () => {
+    // Simulates rematch bumping updated_at days later while completed_at stays fixed.
+    const metrics = buildProcessingMetrics({
+      startedAt: '2026-07-23T13:45:57',
+      endedAt: '2026-07-23T15:10:00',
+      processedPages: 275,
+      totalPages: 275,
+      running: false,
+      nowMs: Date.parse('2026-07-30T06:00:00Z'),
+      locale: 'zh-CN',
+    })
+
+    expect(metrics.elapsedTime).toBe('1小时 24分 3秒')
+    expect(metrics.timeLeft).toBe('0秒')
+    expect(metrics.processingRate).not.toBe('0.03 页/分钟')
+  })
+
   it('shows a calculating state before enough progress is available', () => {
     const metrics = buildProcessingMetrics({
       startedAt: '2026-07-16T10:20:00',

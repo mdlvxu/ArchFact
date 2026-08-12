@@ -1828,6 +1828,8 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             "morphological_description.value 应删除页眉、图号、遗迹范围、其他器物编号和无关叙述，"
             "仅依据当前器物原文，按口沿、颈、肩、腹、底、足、耳、纹饰等逻辑顺序重组为通顺中文；"
             "允许合并同一器物的相邻 OCR 片段和补充必要标点，不得引入原文没有的器形特征。"
+            "不得把形态描述截成单个短词（如仅“片状”）；原文若有风化、受沁、器形、穿孔、纹饰等连续描述，"
+            "必须写入同一字段的完整整理结果，并在换行后的后续 OCR block 中继续提取。"
             "link_hints 由后端根据 fields 和 linkage 确定性生成，无需自行推测。"
             "顶层固定包含 schema_version、chunk_id、records。"
         )

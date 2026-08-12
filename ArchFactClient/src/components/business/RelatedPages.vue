@@ -315,7 +315,7 @@ watch(
 .relation-tag[data-kind='text'],
 .relation-tag[data-relation='Current'] { background: #9acb72; }
 .relation-tag[data-kind='artifact_crop'] { background: #62bed4; }
-.relation-tag[data-kind='color_plate'] { background: #62bed4; }
+.relation-tag[data-kind='color_plate'] { background: #c97916; }
 
 .related-item b {
   position: absolute;

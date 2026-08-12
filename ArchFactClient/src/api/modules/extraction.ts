@@ -181,8 +181,11 @@ export function createExtractionJob(
   )
 }
 
-export function getExtractionJob(jobId: string): Promise<ExtractionJob> {
-  return get<ExtractionJob>(`/v1/extraction-jobs/${jobId}`)
+export function getExtractionJob(
+  jobId: string,
+  options?: { suppressErrorMessage?: boolean },
+): Promise<ExtractionJob> {
+  return get<ExtractionJob>(`/v1/extraction-jobs/${jobId}`, options)
 }
 
 export function getLatestCompletedExtractionJob(): Promise<ExtractionJob | null> {

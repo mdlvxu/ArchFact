@@ -28,7 +28,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    open: true,
+    // 统一由根目录启动脚本在三个服务就绪后打开浏览器。
+    open: false,
     // 开发环境 API 代理，避免跨域问题
     proxy: {
       '/api': {

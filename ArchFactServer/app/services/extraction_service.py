@@ -23,6 +23,7 @@ from app.services.extraction_engine import ExtractionEngine, PageChunk
 from app.services.extraction_pipeline import PageExtractionResult, build_extraction_pipeline
 from app.services.page_discovery import PageDiscoveryService
 from app.services.page_preprocessor import PagePreprocessor
+from app.services.page_semantics import PageSemantics
 from app.services.post_processor import PostProcessor
 from app.services.region_processor import RegionProcessor
 from app.services.relation_matcher import RelationMatcher
@@ -314,11 +315,14 @@ class ExtractionService:
 
         async def schedule_semantic_page(page: dict[str, Any]) -> None:
             page_no = int(page["page_no"])
+            if PageSemantics.is_reference_index_text(str(page.get("text") or "")):
+                page["reference_index"] = True
             if (
                 page_no in semantic_tasks
                 or page.get("status") != "ready"
                 or page.get("needs_ocr")
                 or page.get("discovery_only")
+                or page.get("reference_index")
             ):
                 return
             await ensure_extraction_run()
@@ -606,12 +610,14 @@ class ExtractionService:
                     )
                     active_model_run_ids.discard(discovery_run_id)
 
+            reference_index_pages = PageSemantics.mark_prepared_pages(prepared.pages)
             preparation_update: dict[str, Any] = {
                 "progress": {
                     "current": round(len(prepared.pages) * 0.35),
                     "total": len(prepared.pages),
                     "percent": 35,
-                }
+                },
+                "reference_index_pages": sorted(reference_index_pages),
             }
             if not retry_mode:
                 preparation_update.update(
@@ -821,6 +827,7 @@ class ExtractionService:
                 page.get("status") == "ready"
                 and not page.get("needs_ocr")
                 and not page.get("discovery_only")
+                and not page.get("reference_index")
                 for page in prepared.pages
             ):
                 await ensure_extraction_run()
@@ -859,7 +866,7 @@ class ExtractionService:
                     )
                     continue
 
-                page_has_output = bool(page.get("needs_ocr"))
+                page_has_output = bool(page.get("needs_ocr") or page.get("reference_index"))
                 page_had_error = False
                 detection_had_error = False
                 semantic_had_error = False
@@ -870,8 +877,14 @@ class ExtractionService:
                 detected_region_count = 0
                 crop_count = 0
                 await self._repository.append_event(job_id, "INFO", f"正在处理第 {page_no} 页")
+                if page.get("reference_index"):
+                    await self._repository.append_event(
+                        job_id,
+                        "INFO",
+                        f"第 {page_no} 页识别为插图/图版目录，已跳过器物抽取与图像关系匹配",
+                    )
 
-                if detection_run_id is not None:
+                if detection_run_id is not None and not page.get("reference_index"):
                     try:
                         await self._repository.update_job(job_id, stage="image_detection")
                         page_image = PageImageInput(
@@ -938,6 +951,7 @@ class ExtractionService:
                     extraction_run_id is not None
                     and not page.get("needs_ocr")
                     and not page.get("discovery_only")
+                    and not page.get("reference_index")
                 ):
                     try:
                         await self._repository.update_job(job_id, stage="semantic_extraction")
@@ -1021,7 +1035,7 @@ class ExtractionService:
                         "failed"
                         if detection_had_error
                         else "completed"
-                        if detection_run_id is not None
+                        if detection_run_id is not None and not page.get("reference_index")
                         else "not_requested"
                     ),
                     semantic_status=(
@@ -1159,6 +1173,11 @@ class ExtractionService:
                 relations=relations,
                 config=config,
                 model_run_id=fusion_run_id,
+                page_metadata={
+                    int(page["page_no"]): page
+                    for page in discovery_index
+                    if isinstance(page.get("page_no"), int)
+                },
                 total=total,
             )
             records = fusion_output.records
@@ -1441,6 +1460,7 @@ class ExtractionService:
         relations: list[dict[str, Any]],
         config: ExtractionConfig,
         model_run_id: str,
+        page_metadata: dict[int, dict[str, Any]],
         total: int,
     ) -> Any:
         fusion_task = asyncio.create_task(
@@ -1452,6 +1472,7 @@ class ExtractionService:
                 relations=relations,
                 config=config,
                 model_run_id=model_run_id,
+                page_metadata=page_metadata,
             )
         )
         elapsed_seconds = 0
