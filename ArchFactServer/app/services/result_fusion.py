@@ -27,7 +27,7 @@ class FusionOutput:
 class ResultFusionService:
     provider = "archfact"
     model = "spatial-evidence-fusion"
-    version = "16"
+    version = "22"
     page_window = 3
     link_hint_min_score = 0.62
     _artifact_line_pattern = re.compile(
@@ -56,6 +56,7 @@ class ResultFusionService:
         "surface_color",
         "completeness",
     )
+    _catalog_prefix_labels = frozenset({"标本", "器物", "遗物", "出土"})
     _ocr_tolerant_artifact_line_pattern = re.compile(
         r"^\s*(?P<prefix>[A-Z]{1,6}?)(?P<left>[0-9ILOQ|]+)"
         r"(?P<left_suffix>[A-HJ-KM-NPR-Z]?)\s*[:：]\s*"
@@ -177,6 +178,12 @@ class ResultFusionService:
             records=records,
             regions=regions,
             page_metadata=page_metadata or {},
+            model_run_id=model_run_id,
+        )
+        self._infer_text_label_number_regions(
+            job_id=job_id,
+            regions=regions,
+            relations=relations,
             model_run_id=model_run_id,
         )
         region_by_id = {region["id"]: region for region in regions}
@@ -784,6 +791,238 @@ class ResultFusionService:
                 )
                 existing_keys.add((page, match_key))
 
+        # Color-plate pages are normally skipped by semantic extraction, so many
+        # books have no sparse LLM record to absorb above. The page OCR still
+        # carries both the plate title (for example ``彩版九五``) and item captions
+        # such as ``1.酱釉瓷双耳罐（T0302①：01）``. Turn those item lines into
+        # approximate visual anchors so body references can complete the
+        # number → text → color-plate chain without inventing card text.
+        regions_by_page: dict[int, list[dict[str, Any]]] = {}
+        for region in regions:
+            page = region.get("page")
+            if (
+                isinstance(page, int)
+                and page in color_pages
+                and region.get("kind") in {"text", "caption", "number"}
+            ):
+                regions_by_page.setdefault(page, []).append(region)
+        for page, page_regions in regions_by_page.items():
+            plate_numbers = {
+                plate_no
+                for region in page_regions
+                for plate_no, _ in cls._plate_references(cls._region_text(region))
+            }
+            if not plate_numbers:
+                continue
+            for anchor in page_regions:
+                anchor_text = cls._region_text(anchor)
+                item_no = cls._plate_item_number(anchor_text)
+                identifiers = cls._artifact_identifiers_in_text(anchor_text)
+                if (
+                    item_no is None
+                    or len(identifiers) != 1
+                    or not cls._is_bbox(anchor.get("bbox"))
+                ):
+                    continue
+                artifact_id = next(iter(identifiers))
+                match_key = (
+                    f"artifact:{cls._normalize_artifact_identifier(artifact_id).casefold()}"
+                )
+                if (page, match_key) in existing_keys:
+                    continue
+                digest = hashlib.sha256(
+                    f"{job_id}:inferred-color:{page}:{match_key}:{anchor['id']}".encode()
+                ).hexdigest()[:24]
+                region_id = f"reg_{digest}"
+                plate_label = "/".join(str(value) for value in sorted(plate_numbers))
+                inferred = {
+                    "id": region_id,
+                    "document_id": anchor.get("document_id"),
+                    "page": page,
+                    "kind": "color_plate",
+                    "bbox": list(anchor["bbox"]),
+                    "bbox_px": None,
+                    "text": anchor_text,
+                    "confidence": float(anchor.get("confidence") or 0.96),
+                    "source": "ocr_identifier_inference",
+                    "model_run_id": model_run_id,
+                    "image_id": anchor.get("image_id"),
+                    "crop_object_key": None,
+                    "approximate": True,
+                    "geometry_type": "caption_anchor",
+                    "match_key": match_key,
+                    "match_reason": (
+                        f"彩版 {plate_label} 第 {item_no} 项与器物编号 "
+                        f"{artifact_id} 一致"
+                    ),
+                }
+                regions.append(inferred)
+                existing_keys.add((page, match_key))
+
+    @classmethod
+    def _infer_text_label_number_regions(
+        cls,
+        *,
+        job_id: str,
+        regions: list[dict[str, Any]],
+        relations: list[dict[str, Any]],
+        model_run_id: str,
+    ) -> None:
+        """Recover figure item labels that YOLO grouped into a caption.
+
+        A short OCR label such as ``3.102022:34`` can still identify figure item
+        3 spatially even when the artifact ID itself is corrupted. The inferred
+        number remains scoped by its overlapping caption and nearest artifact.
+        """
+
+        by_page: dict[int, list[dict[str, Any]]] = {}
+        for region in regions:
+            page = region.get("page")
+            if isinstance(page, int):
+                by_page.setdefault(page, []).append(region)
+
+        new_regions: list[dict[str, Any]] = []
+        new_relations: list[dict[str, Any]] = []
+        for page, page_regions in by_page.items():
+            artifacts = [
+                region
+                for region in page_regions
+                if region.get("kind") in {"artifact", "line_drawing", "grave_drawing"}
+                and cls._is_bbox(region.get("bbox"))
+            ]
+            if not artifacts:
+                continue
+            captions = [
+                region
+                for region in page_regions
+                if region.get("kind") == "caption" and cls._is_bbox(region.get("bbox"))
+            ]
+            existing_numbers = [
+                region
+                for region in page_regions
+                if region.get("kind") == "number" and cls._is_bbox(region.get("bbox"))
+            ]
+            for anchor in page_regions:
+                if anchor.get("kind") != "text" or not cls._is_bbox(anchor.get("bbox")):
+                    continue
+                text = cls._region_text(anchor)
+                match = re.match(r"^\s*(\d{1,2})\s*[.、．:：]\s*(\S.+?)\s*$", text)
+                if (
+                    match is None
+                    or len(text) > 40
+                    or not re.search(r"[:：]\s*[A-Za-z]?\d", text)
+                ):
+                    continue
+                bbox = anchor["bbox"]
+                if any(
+                    cls._intersection_over_smaller(bbox, number["bbox"]) >= 0.5
+                    for number in existing_numbers
+                ):
+                    continue
+
+                ranked_artifacts: list[tuple[float, dict[str, Any]]] = []
+                label_width = max(float(bbox[2]) - float(bbox[0]), 0.0001)
+                for artifact in artifacts:
+                    artifact_bbox = artifact["bbox"]
+                    overlap = max(
+                        0.0,
+                        min(float(bbox[2]), float(artifact_bbox[2]))
+                        - max(float(bbox[0]), float(artifact_bbox[0])),
+                    )
+                    overlap_ratio = overlap / min(
+                        label_width,
+                        max(float(artifact_bbox[2]) - float(artifact_bbox[0]), 0.0001),
+                    )
+                    vertical_gap = float(bbox[1]) - float(artifact_bbox[3])
+                    if overlap_ratio < 0.45 or not -0.04 <= vertical_gap <= 0.14:
+                        continue
+                    score = overlap_ratio + max(0.0, 0.14 - abs(vertical_gap))
+                    ranked_artifacts.append((score, artifact))
+                if not ranked_artifacts:
+                    continue
+                spatial_score, artifact = max(
+                    ranked_artifacts,
+                    key=lambda item: item[0],
+                )
+                overlapping_captions = [
+                    caption
+                    for caption in captions
+                    if cls._intersection_over_smaller(bbox, caption["bbox"]) >= 0.45
+                ]
+                if not overlapping_captions:
+                    overlapping_captions = [
+                        caption
+                        for caption in captions
+                        if re.search(
+                            r"(?:图|圖|fig(?:ure)?)\s*\d",
+                            cls._region_text(caption),
+                            re.IGNORECASE,
+                        )
+                        and 0
+                        <= float(caption["bbox"][1]) - float(bbox[3])
+                        <= 0.12
+                    ]
+                if not overlapping_captions:
+                    continue
+
+                digest = hashlib.sha256(
+                    f"{job_id}:ocr-label-number:{page}:{anchor['id']}".encode()
+                ).hexdigest()[:24]
+                number_id = f"reg_{digest}"
+                inferred = {
+                    **anchor,
+                    "id": number_id,
+                    "kind": "number",
+                    "source": "ocr_label_inference",
+                    "model_run_id": model_run_id,
+                    "crop_object_key": None,
+                    "approximate": True,
+                    "sequence_no": int(match.group(1)),
+                    "identifier_unreliable": (
+                        not bool(cls._artifact_identifiers_in_text(text))
+                        or not bool(re.match(r"^[A-Za-z]", match.group(2)))
+                    ),
+                    "inferred_from_region_id": str(anchor["id"]),
+                    "confidence": round(min(0.95, 0.72 + spatial_score * 0.1), 6),
+                }
+                new_regions.append(inferred)
+
+                relation_digest = hashlib.sha256(
+                    f"{job_id}:ocr-label-number-of:{number_id}:{artifact['id']}".encode()
+                ).hexdigest()[:24]
+                new_relations.append(
+                    {
+                        "id": f"rel_{relation_digest}",
+                        "source_region_id": number_id,
+                        "target_region_id": str(artifact["id"]),
+                        "relation_type": "number_of",
+                        "score": round(min(0.97, 0.78 + spatial_score * 0.1), 6),
+                        "method": "ocr_label_spatial_assignment",
+                        "version": cls.version,
+                        "model_run_id": model_run_id,
+                        "review_status": "unreviewed",
+                    }
+                )
+                for caption in overlapping_captions:
+                    caption_digest = hashlib.sha256(
+                        f"{job_id}:ocr-label-caption:{caption['id']}:{number_id}".encode()
+                    ).hexdigest()[:24]
+                    new_relations.append(
+                        {
+                            "id": f"rel_{caption_digest}",
+                            "source_region_id": str(caption["id"]),
+                            "target_region_id": number_id,
+                            "relation_type": "caption_to_number",
+                            "score": 0.94,
+                            "method": "ocr_label_caption_overlap",
+                            "version": cls.version,
+                            "model_run_id": model_run_id,
+                            "review_status": "unreviewed",
+                        }
+                    )
+        regions.extend(new_regions)
+        relations.extend(new_relations)
+
     @classmethod
     def _color_plate_anchor(
         cls,
@@ -894,13 +1133,25 @@ class ResultFusionService:
                     if (
                         expected_identifier
                         and candidate_identifiers
-                        and expected_identifier not in candidate_identifiers
+                        and not any(
+                            cls._identifiers_compatible(
+                                expected_identifier,
+                                candidate_identifier,
+                            )
+                            for candidate_identifier in candidate_identifiers
+                        )
                     ):
                         continue
                     exact_identifier = int(
                         bool(
                             expected_identifier
-                            and expected_identifier in candidate_identifiers
+                            and any(
+                                cls._identifiers_compatible(
+                                    expected_identifier,
+                                    candidate_identifier,
+                                )
+                                for candidate_identifier in candidate_identifiers
+                            )
                         )
                     )
                     structured_match_key = int(
@@ -925,9 +1176,14 @@ class ResultFusionService:
                 score = (
                     0.99
                     if expected_identifier
-                    and expected_identifier
-                    in cls._artifact_identifiers_in_text(
-                        cls._region_text(candidate)
+                    and any(
+                        cls._identifiers_compatible(
+                            expected_identifier,
+                            candidate_identifier,
+                        )
+                        for candidate_identifier in cls._artifact_identifiers_in_text(
+                            cls._region_text(candidate)
+                        )
                     )
                     else 0.96
                 )
@@ -1085,12 +1341,30 @@ class ResultFusionService:
         field_key: str,
         current_value: str,
         candidate_value: str,
+        expected_identifier: str = "",
     ) -> bool:
-        """Replace truncated LLM fragments when OCR paragraph text is richer."""
+        """Replace truncated or cross-artifact values with the scoped OCR span."""
 
         current = unicodedata.normalize("NFKC", str(current_value or "")).strip()
         candidate = unicodedata.normalize("NFKC", str(candidate_value or "")).strip()
-        if not candidate or not current:
+        if not candidate:
+            return False
+        if field_key in {"morphological_description", "texture", "measurements"}:
+            if expected_identifier and cls._contains_foreign_artifact_identifier(
+                current,
+                expected_identifier,
+            ):
+                return True
+            compact_current = re.sub(r"\s+", "", current)
+            compact_candidate = re.sub(r"\s+", "", candidate)
+            if (
+                compact_candidate
+                and compact_current
+                and compact_candidate != compact_current
+                and compact_candidate in compact_current
+            ):
+                return True
+        if not current:
             return False
         if field_key != "morphological_description":
             return False
@@ -1267,17 +1541,26 @@ class ResultFusionService:
                 if continuation is None:
                     break
                 continuation_text = cls._region_text(continuation)
-                if (
-                    cls._artifact_identifier_from_text(continuation_text)
-                    or cls._looks_like_next_artifact_entry_line(continuation_text)
-                ):
+                if cls._contains_foreign_artifact_identifier(
+                    continuation_text,
+                    expected_identifier,
+                ) or cls._looks_like_next_artifact_entry_line(continuation_text):
                     break
                 paragraph_regions.append(continuation)
                 current = continuation
 
-            paragraph_evidence = [
-                cls._text_region_evidence(region) for region in paragraph_regions
-            ]
+            paragraph_evidence = []
+            for region in paragraph_regions:
+                item = cls._text_region_evidence(region)
+                original_text = cls._region_text(region)
+                scoped_quote = cls._scoped_artifact_paragraph_text(
+                    original_text,
+                    expected_identifier=expected_identifier,
+                )
+                repaired_text = cls._repair_identifier_punctuation(original_text)
+                if scoped_quote and scoped_quote != repaired_text:
+                    item["quote"] = scoped_quote
+                paragraph_evidence.append(item)
             record["text_evidence"] = paragraph_evidence
             record.setdefault("region_ids", []).extend(
                 str(region["id"]) for region in paragraph_regions
@@ -1285,10 +1568,12 @@ class ResultFusionService:
             cls._complete_paragraph_measurements(
                 record=record,
                 paragraph_regions=paragraph_regions,
+                expected_identifier=expected_identifier,
             )
             cls._complete_paragraph_figure_caption(
                 record=record,
                 paragraph_regions=paragraph_regions,
+                expected_identifier=expected_identifier,
             )
             cls._complete_paragraph_descriptive_fields(
                 record=record,
@@ -1558,6 +1843,20 @@ class ResultFusionService:
         return bool(cls._next_artifact_entry_line_pattern.match(normalized))
 
     @classmethod
+    def _contains_foreign_artifact_identifier(
+        cls,
+        value: Any,
+        expected_identifier: str,
+    ) -> bool:
+        expected = cls._normalize_artifact_identifier(expected_identifier)
+        if not expected:
+            return bool(cls._artifact_identifiers_in_text(value))
+        return any(
+            not cls._identifiers_compatible(expected, identifier)
+            for identifier in cls._artifact_identifiers_in_text(value)
+        )
+
+    @classmethod
     def _evidence_has_conflicting_artifact_identifier(
         cls,
         *,
@@ -1634,11 +1933,16 @@ class ResultFusionService:
 
     @classmethod
     def _region_artifact_identifier(cls, region: dict[str, Any]) -> str:
-        return cls._artifact_identifier_from_text(cls._region_text(region))
+        text = cls._region_text(region)
+        identifier = cls._artifact_identifier_from_text(text)
+        if identifier:
+            return identifier
+        identifiers = cls._artifact_identifiers_in_text(text)
+        return next(iter(identifiers)) if len(identifiers) == 1 else ""
 
     @classmethod
     def _artifact_identifier_from_text(cls, value: Any) -> str:
-        normalized = unicodedata.normalize("NFKC", str(value or ""))
+        normalized = cls._repair_identifier_punctuation(value)
         match = cls._artifact_line_pattern.search(normalized)
         identifier = cls._normalize_artifact_identifier(match.group(0) if match else value)
         if cls._strict_artifact_id_pattern.fullmatch(identifier):
@@ -1679,7 +1983,7 @@ class ResultFusionService:
 
     @classmethod
     def _artifact_identifiers_in_text(cls, value: Any) -> set[str]:
-        normalized = unicodedata.normalize("NFKC", str(value or ""))
+        normalized = cls._repair_identifier_punctuation(value)
         identifiers = {
             cls._normalize_artifact_identifier(match.group(1))
             for match in cls._artifact_identifier_pattern.finditer(normalized)
@@ -1694,11 +1998,19 @@ class ResultFusionService:
         }
 
     @staticmethod
+    def _repair_identifier_punctuation(value: Any) -> str:
+        text = unicodedata.normalize("NFKC", str(value or ""))
+        # OCR sometimes inserts one side of a parenthesis around a circled unit:
+        # ``T0302(2:34`` / ``T03022):34``. NFKC has already expanded ② to 2.
+        text = re.sub(r"(?<=[A-Za-z0-9])\((?=\d{1,2}[:：])", "", text)
+        return re.sub(r"(?<=\d)\)(?=[:：])", "", text)
+
+    @staticmethod
     def _normalize_artifact_identifier(value: Any) -> str:
         text = re.sub(
             r"\s+",
             "",
-            unicodedata.normalize("NFKC", str(value or "")).upper(),
+            ResultFusionService._repair_identifier_punctuation(value).upper(),
         )
         # Color-plate captions often prefix the true ID with a tomb/unit label
         # such as 仲M4:3. Keep the Latin+digit identity for linking/catalog.
@@ -1792,6 +2104,12 @@ class ResultFusionService:
         """
 
         color_pages = cls._color_plate_pages(regions, page_metadata)
+        linkage_only_pages = {
+            int(page)
+            for page, metadata in page_metadata.items()
+            if metadata.get("semantic_text_source") is False
+            or metadata.get("page_type") in {"color_plate", "color_visual"}
+        }
         rich: list[dict[str, Any]] = []
         sparse: list[dict[str, Any]] = []
         for record in records:
@@ -1803,7 +2121,7 @@ class ResultFusionService:
                 or cls._raw_artifact_id_has_tomb_prefix(record)
                 or cls._looks_like_plate_item_caption(record)
             )
-            if is_sparse and plate_like:
+            if page in linkage_only_pages or (is_sparse and plate_like):
                 sparse.append(record)
             else:
                 rich.append(record)
@@ -1829,7 +2147,14 @@ class ResultFusionService:
             artifact_id = cls._record_artifact_identifier(caption_record)
             owners = owners_by_id.get(artifact_id, [])
             if not owners:
-                # No body-text card exists — still drop the empty plate caption card.
+                recovered = cls._recover_orphan_visual_record(
+                    record=caption_record,
+                    regions=regions,
+                    excluded_pages=color_pages | linkage_only_pages,
+                )
+                if recovered is not None:
+                    rich.append(recovered)
+                    owners_by_id.setdefault(artifact_id, []).append(recovered)
                 continue
             owner = max(owners, key=owner_score)
             # Linkage only: never promote color-plate OCR into body fields / text_evidence.
@@ -1958,6 +2283,101 @@ class ResultFusionService:
         return rich
 
     @classmethod
+    def _recover_orphan_visual_record(
+        cls,
+        *,
+        record: dict[str, Any],
+        regions: list[dict[str, Any]],
+        excluded_pages: set[int],
+    ) -> dict[str, Any] | None:
+        """Promote a visual-only card when a unique rich body OCR anchor exists."""
+
+        artifact_id = cls._record_artifact_identifier(record)
+        if not artifact_id:
+            return None
+        candidates: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+        for region in regions:
+            page = region.get("page")
+            text = cls._region_text(region)
+            if (
+                region.get("kind") != "text"
+                or not isinstance(page, int)
+                or page in excluded_pages
+                or not cls._is_bbox(region.get("bbox"))
+                or not text
+                or cls._identifier_text_score(artifact_id, text) != 1.0
+            ):
+                continue
+            body_signals = sum(
+                token in text
+                for token in ("厘米", "图", "彩版", "残", "长", "宽", "高", "厚")
+            )
+            candidates.append(
+                (
+                    (
+                        body_signals,
+                        min(len(text), 200),
+                        -page,
+                    ),
+                    region,
+                )
+            )
+        if not candidates:
+            return None
+        best_rank, anchor = max(candidates, key=lambda item: item[0])
+        # A short table cell or repeated catalog label is not body evidence.
+        if best_rank[0] == 0 and best_rank[1] < 24:
+            return None
+
+        original_pages = [
+            int(page)
+            for page in (
+                *(
+                    record.get("source_pages", [])
+                    if isinstance(record.get("source_pages"), list)
+                    else []
+                ),
+                *(
+                    record.get("associated_pages", [])
+                    if isinstance(record.get("associated_pages"), list)
+                    else []
+                ),
+            )
+            if isinstance(page, int)
+        ]
+        page = int(anchor["page"])
+        record["record_type"] = "artifact"
+        record["source_pages"] = [page]
+        record["associated_pages"] = cls._unique_values([page, *original_pages])
+        record["region_ids"] = cls._unique_values(
+            [
+                str(anchor["id"]),
+                *(
+                    record.get("region_ids", [])
+                    if isinstance(record.get("region_ids"), list)
+                    else []
+                ),
+            ]
+        )
+        fields = record.get("fields", {})
+        artifact_field = fields.get("artifact_id", {}) if isinstance(fields, dict) else {}
+        if isinstance(artifact_field, dict):
+            prior_evidence = [
+                evidence
+                for evidence in artifact_field.get("evidence", [])
+                if isinstance(evidence, dict) and evidence.get("page") not in excluded_pages
+            ]
+            artifact_field["evidence"] = [
+                cls._text_region_evidence(anchor),
+                *prior_evidence,
+            ]
+        warnings = record.setdefault("warnings", [])
+        warning = "已从非彩图正文 OCR 恢复器物卡文本来源"
+        if warning not in warnings:
+            warnings.append(warning)
+        return record
+
+    @classmethod
     def _text_region_evidence(cls, region: dict[str, Any]) -> dict[str, Any]:
         return {
             "page": int(region["page"]),
@@ -1979,32 +2399,41 @@ class ResultFusionService:
         *,
         record: dict[str, Any],
         paragraph_regions: list[dict[str, Any]],
+        expected_identifier: str = "",
     ) -> None:
         fields = record.get("fields", {})
         measurement_field = fields.get("measurements") if isinstance(fields, dict) else None
         if not isinstance(measurement_field, dict):
             return
 
-        region_matches = [
-            (region, list(cls._measurement_value_pattern.finditer(cls._region_text(region))))
-            for region in paragraph_regions
-        ]
-        matches = [
-            match
-            for _, current_matches in region_matches
-            for match in current_matches
-        ]
+        combined_text = "".join(cls._region_text(region) for region in paragraph_regions)
+        scoped_text = cls._scoped_artifact_paragraph_text(
+            combined_text,
+            expected_identifier=expected_identifier,
+        )
+        matches = list(cls._measurement_value_pattern.finditer(scoped_text))
         if not matches:
             return
+        scoped_raw = {match.group(0).strip() for match in matches}
+        region_matches = []
+        for region in paragraph_regions:
+            region_text = cls._scoped_artifact_paragraph_text(
+                cls._region_text(region),
+                expected_identifier=expected_identifier,
+            )
+            current_matches = [
+                match
+                for match in cls._measurement_value_pattern.finditer(region_text)
+                if match.group(0).strip() in scoped_raw
+            ]
+            region_matches.append((region, current_matches))
         explicit_units = [match.group("unit") for match in matches if match.group("unit")]
         shared_unit = ""
         if explicit_units:
             shared_unit = cls._normalize_measurement_unit(explicit_units[-1])
         else:
             # Units are often wrapped onto the next OCR line: ``厚0.4~0.6`` / ``厘米。``
-            combined_text = "".join(
-                cls._region_text(region) for region in paragraph_regions
-            )
+            combined_text = scoped_text
             # Prefer multi-character units. A bare ``米``/``m`` alternative would
             # incorrectly win inside ``厘米`` with some regex engines/flags.
             trailing_unit = re.search(
@@ -2028,14 +2457,9 @@ class ResultFusionService:
         measurement_field["raw_value"] = "、".join(raw_values)
         measurement_field["value"] = "；".join(normalized_values)
         measurement_field["status"] = "valid"
-        evidence = measurement_field.setdefault("evidence", [])
-        if not isinstance(evidence, list):
-            return
-        existing_region_ids = {
-            str(item.get("region_id"))
-            for item in evidence
-            if isinstance(item, dict) and item.get("region_id")
-        }
+        evidence: list[dict[str, Any]] = []
+        measurement_field["evidence"] = evidence
+        existing_region_ids: set[str] = set()
         for region, current_matches in region_matches:
             region_id = str(region["id"])
             if not current_matches or region_id in existing_region_ids:
@@ -2051,12 +2475,16 @@ class ResultFusionService:
         *,
         record: dict[str, Any],
         paragraph_regions: list[dict[str, Any]],
+        expected_identifier: str = "",
     ) -> None:
         fields = record.get("fields", {})
         caption_field = fields.get("figure_caption") if isinstance(fields, dict) else None
         if not isinstance(caption_field, dict):
             return
-        combined_text = "".join(cls._region_text(region) for region in paragraph_regions)
+        combined_text = cls._scoped_artifact_paragraph_text(
+            "".join(cls._region_text(region) for region in paragraph_regions),
+            expected_identifier=expected_identifier,
+        )
         caption_match = cls._closed_visual_reference(combined_text)
         if caption_match is None:
             return
@@ -2065,22 +2493,23 @@ class ResultFusionService:
         caption_field["value"] = normalized_caption
         if caption_field.get("status") == "missing":
             caption_field["status"] = "valid"
-        evidence = caption_field.setdefault("evidence", [])
-        if not isinstance(evidence, list):
-            return
-        existing_region_ids = {
-            str(item.get("region_id"))
-            for item in evidence
-            if isinstance(item, dict) and item.get("region_id")
-        }
+        evidence = []
+        caption_field["evidence"] = evidence
+        existing_region_ids: set[str] = set()
         for region in paragraph_regions:
             region_id = str(region["id"])
+            scoped_text = cls._scoped_artifact_paragraph_text(
+                cls._region_text(region),
+                expected_identifier=expected_identifier,
+            )
             if (
                 region_id in existing_region_ids
-                or not cls._visual_reference_pattern.search(cls._region_text(region))
+                or not cls._visual_reference_pattern.search(scoped_text)
             ):
                 continue
-            evidence.append(cls._text_region_evidence(region))
+            item = cls._text_region_evidence(region)
+            item["quote"] = scoped_text
+            evidence.append(item)
             existing_region_ids.add(region_id)
         hints = record.setdefault("link_hints", {})
         if isinstance(hints, dict):
@@ -2108,12 +2537,16 @@ class ResultFusionService:
         if not isinstance(fields, dict) or not paragraph_regions:
             return
 
-        combined_text = "".join(cls._region_text(region) for region in paragraph_regions)
+        combined_text = cls._scoped_artifact_paragraph_text(
+            "".join(cls._region_text(region) for region in paragraph_regions),
+            expected_identifier=expected_identifier,
+        )
         remainder = cls._descriptive_paragraph_remainder(
             combined_text,
             expected_identifier=expected_identifier,
         )
         if not remainder:
+            cls._clear_catalog_prefix_category(fields)
             return
 
         category = ""
@@ -2122,6 +2555,8 @@ class ResultFusionService:
             category = category_match.group("category").strip()
             # Avoid treating a texture/material clause as the category.
             if cls._texture_phrase_pattern.fullmatch(category):
+                category = ""
+            elif category in cls._catalog_prefix_labels:
                 category = ""
             elif len(category) > 8 and any(
                 marker in category for marker in ("口", "腹", "底", "足", "领", "沿", "唇")
@@ -2156,6 +2591,7 @@ class ResultFusionService:
                 raw_value=category,
                 paragraph_regions=paragraph_regions,
                 quote=category,
+                expected_identifier=expected_identifier,
             )
         if texture:
             cls._fill_field_from_paragraph(
@@ -2165,6 +2601,7 @@ class ResultFusionService:
                 raw_value=texture,
                 paragraph_regions=paragraph_regions,
                 quote=texture,
+                expected_identifier=expected_identifier,
             )
         if morphology and len(morphology) >= 2:
             cls._fill_field_from_paragraph(
@@ -2174,7 +2611,58 @@ class ResultFusionService:
                 raw_value=morphology,
                 paragraph_regions=paragraph_regions,
                 quote=morphology[:80],
+                expected_identifier=expected_identifier,
             )
+        if not category:
+            cls._clear_catalog_prefix_category(fields)
+
+    @classmethod
+    def _clear_catalog_prefix_category(cls, fields: dict[str, Any]) -> None:
+        field = fields.get("category")
+        if not isinstance(field, dict):
+            return
+        current = str(field.get("value") or field.get("raw_value") or "").strip()
+        if current not in cls._catalog_prefix_labels:
+            return
+        field["value"] = None
+        field["raw_value"] = None
+        field["status"] = "missing"
+
+    @classmethod
+    def _scoped_artifact_paragraph_text(
+        cls,
+        text: str,
+        *,
+        expected_identifier: str,
+    ) -> str:
+        """Keep only the catalog span for this artifact ID.
+
+        Body OCR lines often start with the previous entry's closing
+        measurements and continue into the next specimen. Rematch may also
+        reuse an already-fused record whose fields swallowed later IDs.
+        """
+
+        normalized = cls._repair_identifier_punctuation(text)
+        expected = cls._normalize_artifact_identifier(expected_identifier)
+        if not expected:
+            return normalized
+
+        start: int | None = None
+        end = len(normalized)
+        for match in cls._artifact_identifier_pattern.finditer(normalized):
+            identifier = cls._normalize_artifact_identifier(match.group(1))
+            if not identifier:
+                continue
+            if cls._identifiers_compatible(expected, identifier):
+                if start is None:
+                    start = match.start(1)
+                continue
+            if start is not None:
+                end = match.start()
+                break
+        if start is None:
+            return normalized
+        return normalized[start:end]
 
     @classmethod
     def _descriptive_paragraph_remainder(
@@ -2183,7 +2671,10 @@ class ResultFusionService:
         *,
         expected_identifier: str,
     ) -> str:
-        normalized = unicodedata.normalize("NFKC", str(text or ""))
+        normalized = cls._scoped_artifact_paragraph_text(
+            text,
+            expected_identifier=expected_identifier,
+        )
         normalized = cls._visual_parenthetical_pattern.sub("", normalized)
         normalized = cls._measurement_value_pattern.sub("", normalized)
         normalized = re.sub(r"[、,，；;\s]*(?:厘米|毫米|米|cm|mm|m)\b", "", normalized, flags=re.I)
@@ -2200,6 +2691,18 @@ class ResultFusionService:
             if leading is not None:
                 normalized = normalized[leading.end() :]
 
+        cutoff = None
+        for match in cls._artifact_identifier_pattern.finditer(normalized):
+            identifier = cls._normalize_artifact_identifier(match.group(1))
+            if identifier and (
+                not expected_identifier
+                or not cls._identifiers_compatible(expected_identifier, identifier)
+            ):
+                cutoff = match.start()
+                break
+        if cutoff is not None:
+            normalized = normalized[:cutoff]
+
         return normalized.strip(" ，,、:：;；。．.")
 
     @classmethod
@@ -2212,6 +2715,7 @@ class ResultFusionService:
         raw_value: str,
         paragraph_regions: list[dict[str, Any]],
         quote: str,
+        expected_identifier: str = "",
     ) -> None:
         field = fields.get(field_key)
         if not isinstance(field, dict):
@@ -2222,15 +2726,20 @@ class ResultFusionService:
                 "evidence": [],
             }
             fields[field_key] = field
-        if cls._field_has_value(field) and not cls._should_upgrade_field_value(
+        current_value = str(field.get("value") or field.get("raw_value") or "")
+        replacing = cls._field_has_value(field)
+        if replacing and not cls._should_upgrade_field_value(
             field_key=field_key,
-            current_value=str(field.get("value") or field.get("raw_value") or ""),
+            current_value=current_value,
             candidate_value=value,
+            expected_identifier=expected_identifier,
         ):
             return
 
         field["raw_value"] = raw_value
         field["value"] = value
+        if replacing:
+            field["evidence"] = []
         if field.get("status") in {None, "missing", "absent"} or field_key == (
             "morphological_description"
         ):
@@ -2298,7 +2807,10 @@ class ResultFusionService:
             return None
 
         if candidate_identifiers:
-            return expected_identifier in candidate_identifiers
+            return any(
+                cls._identifiers_compatible(expected_identifier, candidate_id)
+                for candidate_id in candidate_identifiers
+            )
 
         page = candidate.get("page")
         if isinstance(page, int) and page in page_number_identifiers:
@@ -2552,6 +3064,24 @@ class ResultFusionService:
             strong_global_matches: dict[str, tuple[float, str, dict[str, Any]]] = {}
             source_page = self._record_source_page(record)
             record_hints = self._record_hints(record)
+            figure_hint_values = [
+                hint for key, hint in record_hints if key == "figure_refs"
+            ]
+            figure_pages = {
+                int(region["page"])
+                for region in visual_text_regions
+                if region.get("kind") == "caption"
+                and isinstance(region.get("page"), int)
+                and any(
+                    self._hint_text_score(
+                        "figure_refs",
+                        figure_hint,
+                        self._region_text(region),
+                    )
+                    >= 0.94
+                    for figure_hint in figure_hint_values
+                )
+            }
             has_scoped_item_context = any(
                 hint_key in {"artifact_ids", "figure_refs"}
                 for hint_key, _ in record_hints
@@ -2570,6 +3100,12 @@ class ResultFusionService:
                     expected_kinds = {"caption", "number"}
                 for region in visual_text_regions:
                     if region.get("kind") not in expected_kinds:
+                        continue
+                    if (
+                        hint_key == "figure_item_nos"
+                        and figure_pages
+                        and region.get("page") not in figure_pages
+                    ):
                         continue
                     text_score = self._hint_text_score(
                         hint_key,
@@ -2610,6 +3146,15 @@ class ResultFusionService:
             selected_matches = dict(strong_global_matches)
             if preferred_match is not None:
                 selected_matches[str(preferred_match[2]["id"])] = preferred_match
+            if (
+                number_match is not None
+                and number_match[0] >= self.link_hint_min_score
+                and any(key == "figure_item_nos" for key, _ in record_hints)
+                and any(key == "figure_refs" for key, _ in record_hints)
+            ):
+                # Keep the exact item-label candidate alongside the whole-figure
+                # caption; otherwise a valid figure title can hide item 3.
+                selected_matches[str(number_match[2]["id"])] = number_match
             selected_matches = {
                 region_id: match
                 for region_id, match in selected_matches.items()
@@ -2723,29 +3268,67 @@ class ResultFusionService:
                 number = region_by_id.get(number_id)
                 if number is None or number.get("kind") != "number":
                     continue
+                number_text = self._region_text(number)
+                exact_score = max(
+                    (
+                        self._identifier_text_score(
+                            hint,
+                            number_text,
+                            allow_unit_collapse=False,
+                            allow_missing_colon=False,
+                        )
+                        for hint in artifact_hints
+                    ),
+                    default=0.0,
+                )
                 identifier_score = max(
                     (
-                        self._identifier_text_score(hint, self._region_text(number))
+                        self._identifier_text_score(hint, number_text)
                         for hint in artifact_hints
                     ),
                     default=0.0,
                 )
                 item_score = max(
-                    (sequence_text_score(hint, self._region_text(number)) for hint in item_hints),
+                    (sequence_text_score(hint, number_text) for hint in item_hints),
                     default=0.0,
                 )
-                priority = 2 if identifier_score == 1.0 else 1 if item_score == 1.0 else 0
-                score = identifier_score if priority == 2 else item_score
-                hint_key = "artifact_ids" if priority == 2 else "figure_item_nos"
+                # Prefer exact ID equality over circled-unit collapse so that
+                # ``T03021:02`` wins over a neighboring ``T0302:01`` crop OCR.
+                priority = (
+                    3
+                    if exact_score == 1.0
+                    else 2
+                    if identifier_score == 1.0
+                    else 1
+                    if item_score == 1.0
+                    else 0
+                )
+                score = (
+                    exact_score
+                    if priority == 3
+                    else identifier_score
+                    if priority == 2
+                    else item_score
+                )
+                hint_key = (
+                    "artifact_ids" if priority >= 2 else "figure_item_nos"
+                )
                 candidate = (priority, score, hint_key, number)
                 if best_number is None or candidate[:2] > best_number[:2]:
                     best_number = candidate
+            scoped_item_fallback = bool(
+                best_number is not None
+                and best_number[0] == 1
+                and figure_hints
+                and best_number[3].get("source") == "ocr_label_inference"
+            )
             if (
                 best_number is None
                 or best_number[0] == 0
                 or (
                     artifact_hints
                     and best_number[0] < 2
+                    and not scoped_item_fallback
                     and bool(
                         self._artifact_identifiers_in_text(
                             self._region_text(best_number[3])
@@ -2920,12 +3503,28 @@ class ResultFusionService:
             item_match = any(
                 sequence_text_score(hint, number_text) == 1.0 for hint in item_hints
             )
-            if artifact_hints and not identifier_match and not spatial_identifier_fallback:
+            scoped_item_fallback = bool(
+                figure_hints
+                and item_match
+                and number.get("source") == "ocr_label_inference"
+                and str(number["id"]) in record_region_ids
+            )
+            if (
+                artifact_hints
+                and not identifier_match
+                and not spatial_identifier_fallback
+                and not scoped_item_fallback
+            ):
                 # An explicit M3:4 must not fall back to M3:11 merely because both
-                # appear under the same caption. Item-only matching is allowed only
-                # when the record itself has no full artifact identifier.
+                # appear under the same caption. A scoped OCR-label inference is
+                # allowed only after exact figure+item and spatial anchoring.
                 continue
-            if not identifier_match and not spatial_identifier_fallback and not item_match:
+            if (
+                not identifier_match
+                and not spatial_identifier_fallback
+                and not scoped_item_fallback
+                and not item_match
+            ):
                 continue
 
             relation_score = relation.get("score")
@@ -3080,14 +3679,115 @@ class ResultFusionService:
         return "".join(character for character in normalized if character.isalnum())
 
     @classmethod
-    def _identifier_text_score(cls, expected: str, observed: str) -> float:
+    def _split_artifact_identifier_parts(
+        cls, identifier: str
+    ) -> tuple[str, str, str] | None:
+        match = re.fullmatch(r"([A-Z]+)(\d+)([A-Z]?):([A-Z]?\d+[A-Z]?)", identifier)
+        if match is None:
+            return None
+        return match.group(1), match.group(2) + match.group(3), match.group(4)
+
+    @classmethod
+    def _is_circled_unit_collapse_pair(cls, full: str, short: str) -> bool:
+        """True when ``full`` is ``short`` plus a dropped circled-unit digit.
+
+        Body OCR ``T0302①:01`` collapses under NFKC to ``T03021:01``, while the
+        crop number may omit the unit and read ``T0302:01``. Matching must still
+        follow crop-number → body text → plate, without keeping ``①`` in the ID.
+        """
+
+        full_parts = cls._split_artifact_identifier_parts(full)
+        short_parts = cls._split_artifact_identifier_parts(short)
+        if full_parts is None or short_parts is None:
+            return False
+        full_prefix, full_left, full_right = full_parts
+        short_prefix, short_left, short_right = short_parts
+        if (
+            full_prefix != short_prefix
+            or full_right != short_right
+            or not full_left.startswith(short_left)
+            or full_left == short_left
+        ):
+            return False
+        # Require a long trench/grid stem so ``M13:9`` never collapses to ``M1:9``.
+        if len(re.sub(r"\D", "", short_left)) < 3:
+            return False
+        unit = full_left[len(short_left) :]
+        return bool(re.fullmatch(r"\d{1,2}", unit)) and 1 <= int(unit) <= 20
+
+    @classmethod
+    def _identifiers_compatible(cls, left: str, right: str) -> bool:
+        if left == right:
+            return True
+        return cls._is_circled_unit_collapse_pair(
+            left, right
+        ) or cls._is_circled_unit_collapse_pair(right, left)
+
+    @classmethod
+    def _matches_missing_colon_identifier(
+        cls,
+        expected_identifier: str,
+        observed: str,
+    ) -> bool:
+        """Match a constrained OCR form such as ``M022`` for ``M02:2``.
+
+        A generic compact comparison is unsafe because ``M13:9`` and ``M1:39``
+        both collapse to ``M139``. Archaeological grid/tomb IDs with a zero-padded
+        left segment (``M02``) are unambiguous enough to recover, while short
+        non-padded identifiers remain strict.
+        """
+
+        parts = cls._split_artifact_identifier_parts(expected_identifier)
+        if parts is None:
+            return False
+        prefix, left, right = parts
+        if (
+            not left.isdigit()
+            or len(left) < 2
+            or not left.startswith("0")
+            or not right.isdigit()
+        ):
+            return False
+        compact = f"{prefix}{left}{right}"
+        normalized_observed = unicodedata.normalize(
+            "NFKC", str(observed or "")
+        ).upper()
+        return bool(
+            re.search(
+                rf"(?<![A-Z0-9]){re.escape(compact)}(?![A-Z0-9])",
+                normalized_observed,
+            )
+        )
+
+    @classmethod
+    def _identifier_text_score(
+        cls,
+        expected: str,
+        observed: str,
+        *,
+        allow_unit_collapse: bool = True,
+        allow_missing_colon: bool = True,
+    ) -> float:
         """Strict identifier comparison; M3:4 and M3:11 must never fuzzy-match."""
 
         expected_values = cls._artifact_identifiers_in_text(expected)
         observed_values = cls._artifact_identifiers_in_text(observed)
-        if not expected_values or not observed_values:
+        if not expected_values:
             return 0.0
-        return 1.0 if expected_values & observed_values else 0.0
+        if observed_values and expected_values & observed_values:
+            return 1.0
+        if allow_unit_collapse and observed_values and any(
+                cls._identifiers_compatible(expected_id, observed_id)
+                for expected_id in expected_values
+                for observed_id in observed_values
+        ):
+            return 1.0
+        if allow_missing_colon and any(
+            cls._matches_missing_colon_identifier(expected_id, observed)
+            for expected_id in expected_values
+        ):
+            return 1.0
+        return 0.0
 
     @classmethod
     def _text_score(cls, left: str, right: str) -> float:
@@ -3105,6 +3805,8 @@ class ResultFusionService:
 
     @classmethod
     def _hint_text_score(cls, hint_key: str, hint: str, region_text: str) -> float:
+        if hint_key == "figure_item_nos":
+            return sequence_text_score(hint, region_text)
         if (
             hint_key in {"artifact_ids", "aliases"}
             and cls._artifact_identifiers_in_text(hint)

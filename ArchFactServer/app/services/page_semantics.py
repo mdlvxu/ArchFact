@@ -66,6 +66,8 @@ class PageSemantics:
         for page in pages:
             if cls.is_reference_index_text(str(page.get("text") or "")):
                 page["reference_index"] = True
+                page["semantic_text_source"] = False
+                page["linkage_ocr_enabled"] = True
                 result.add(int(page["page_no"]))
         return result
 

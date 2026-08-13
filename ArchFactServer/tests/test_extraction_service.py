@@ -239,6 +239,23 @@ def create_pdf(path: Path) -> None:
     document.close()
 
 
+def create_role_gated_pdf(path: Path) -> None:
+    document = fitz.open()
+    for page_no in range(1, 5):
+        page = document.new_page()
+        if page_no <= 3:
+            page.draw_rect(
+                fitz.Rect(40, 60, 555, 760),
+                color=(0.1, 0.2, 0.7),
+                fill=(0.3, 0.65, 0.85),
+            )
+            page.insert_text((72, 740), f"Plate {page_no} M12:3")
+        else:
+            page.insert_text((72, 72), "M12:3 gray pottery jar body evidence")
+    document.save(path)
+    document.close()
+
+
 def build_service(
     *,
     tmp_path: Path,
@@ -307,11 +324,45 @@ def test_job_orchestration_reaches_completed_result(tmp_path: Path) -> None:
         "completed",
         "completed",
         "completed",
+        "completed",
     ]
     assert repository.records[0]["fields"]["page_text"]["value"].startswith("M12:3")
     assert repository.records[0]["fields"]["page_text"]["evidence"][0]["region_id"]
     assert repository.records[0]["entity_id"].startswith("ent_")
     assert repository.entities[0]["record_ids"] == [repository.records[0]["id"]]
+
+
+def test_full_document_color_pages_are_linkage_only(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "role-gated.pdf"
+    create_role_gated_pdf(pdf_path)
+    repository = FakeRepository()
+    repository.job["pages"] = [1, 2, 3, 4]
+    service = build_service(
+        tmp_path=tmp_path,
+        pdf_path=pdf_path,
+        repository=repository,
+    )
+
+    asyncio.run(service.run_job("job_test"))
+
+    assert repository.job["status"] == "completed"
+    assert len(repository.page_index) == 4
+    assert all(
+        repository.page_index[index]["page_type"] == "color_plate"
+        for index in range(3)
+    )
+    assert all(
+        repository.pages[index]["semantic_text_source"] is False
+        for index in range(3)
+    )
+    assert len(repository.text_chunks) == 1
+    assert repository.text_chunks[0]["source_pages"] == [4]
+    assert {
+        region.get("evidence_role")
+        for region in repository.regions
+        if int(region["page"]) <= 3 and region["kind"] == "text"
+    } == {"linkage_only"}
+    assert all(record.get("source_pages") == [4] for record in repository.records)
 
 
 def test_scanned_page_completes_with_ocr_warning(tmp_path: Path) -> None:
@@ -389,6 +440,7 @@ def test_scanned_page_uses_ocr_result_for_semantic_extraction(tmp_path: Path) ->
     assert repository.records[0]["fields"]["page_text"]["value"] == "M12:7 灰陶罐"
     assert [run["stage"] for run in repository.model_runs] == [
         "pdf_parse",
+        "page_discovery",
         "page_ocr",
         "semantic_extraction",
         "relation_matching",

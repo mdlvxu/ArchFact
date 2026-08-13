@@ -2,6 +2,35 @@
 
 [English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
 
+## quality-baseline-v3 — 2026-08-13
+
+Main changes since `quality-baseline-v2` (2026-08-12).
+
+### Color-page roles before extraction
+
+- Page discovery v2 classifies pages by confidence (`color_plate`, `color_visual`, `mixed_visual`, `monochrome_visual`, `document`, `blank`)
+- Full-document jobs build this page index first
+- Color plates keep OCR and YOLO for linkage, but skip LLM semantic extraction and the body-text index
+
+### Visual-only cards recover a body owner
+
+- Sparse color-plate caption cards (e.g. `T03022:3`) recover unique rich body OCR and move `source_pages` off the plate
+- Figure-item crops bind even when the label OCR is garbled (e.g. `3.102022:34` → `T03022:34`)
+- Repair OCR punctuation around circled units (`T0302(②：34` → `T03022:34`)
+
+### Paragraph fields stay on one artifact
+
+- Stop wrapping OCR at the next different artifact ID
+- Scope measurements, captions, and morphology to this ID’s span (drop the previous entry’s tail and later specimens)
+- On rematch, replace already-fused fields that swallowed later IDs such as `T02037`
+- Do not treat catalog prefixes such as `标本` as the vessel category
+
+### Tests
+
+- Fusion regressions for color-only cards, garbled figure labels, rematch field pollution, and catalog-prefix categories
+
+---
+
 ## quality-baseline-v2 — 2026-08-12
 
 Main changes and improvements since `quality-baseline-v1` (2026-07-28).

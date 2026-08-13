@@ -803,7 +803,21 @@ def test_fusion_corrects_ocr_identifier_and_merges_wrapped_artifact_record() -> 
                     ],
                 },
                 "measurements": dict(missing),
-                "morphological_description": dict(missing),
+                # Even a mistakenly rich LLM result on a classified color page
+                # is association-only and must not overwrite body evidence.
+                "morphological_description": {
+                    "raw_value": "彩图推断器形",
+                    "value": "彩图推断器形",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 26,
+                            "quote": "彩图推断器形",
+                            "bbox": [0.2, 0.89, 0.35, 0.91],
+                            "region_id": "color-caption",
+                        }
+                    ],
+                },
             },
             "link_hints": {
                 "artifact_ids": ["M1:19"],
@@ -885,6 +899,7 @@ def test_fusion_corrects_ocr_identifier_and_merges_wrapped_artifact_record() -> 
     assert body["fields"]["measurements"]["value"] == "口径 13.4 cm；高 22 cm"
     assert body["fields"]["figure_caption"]["value"] == "图3-2C;彩版九,3、4"
     assert "叭形圈足较高" in body["fields"]["morphological_description"]["value"]
+    assert "彩图推断器形" not in body["fields"]["morphological_description"]["value"]
     # Color-plate caption cards are linkage-only and must not remain as empty catalog rows.
     assert len(output.records) == 1
     assert 26 in body.get("associated_pages", [])
@@ -1754,6 +1769,29 @@ def test_identifier_score_preserves_artifact_number_segments() -> None:
     assert service._identifier_text_score("M1:6", "MI：6，石钺") == 1.0
     assert service._hint_text_score("artifact_ids", "M1:5", "M1:59") == 0.0
     assert service._hint_text_score("aliases", "M1：5", "M1:59") == 0.0
+    assert service._identifier_text_score("M02:2", "M022") == 1.0
+    assert (
+        service._identifier_text_score(
+            "M02:2", "M022", allow_missing_colon=False
+        )
+        == 0.0
+    )
+    assert service._identifier_text_score("M02:2", "M023") == 0.0
+    assert service._identifier_text_score("M13:9", "M139") == 0.0
+    assert service._identifier_text_score("M1:39", "M139") == 0.0
+    # Crop OCR may drop the circled unit while body ID keeps NFKC-collapsed ``1``.
+    assert service._identifier_text_score("T03021:01", "T0302:01") == 1.0
+    assert service._identifier_text_score("T0302\u2460:01", "T0302:01") == 1.0
+    assert (
+        service._identifier_text_score(
+            "T03021:01", "T0302:01", allow_unit_collapse=False
+        )
+        == 0.0
+    )
+    assert service._identifier_text_score("M13:9", "M1:9") == 0.0
+    assert service._identifier_text_score("T03021:01", "T03022:01") == 0.0
+    assert service._identifiers_compatible("T03021:01", "T0302:01")
+    assert not service._identifiers_compatible("T03021:02", "T0302:01")
 
 
 def test_numbered_crop_rejects_idless_nearest_record_after_t_prefix_recovery() -> None:
@@ -1805,6 +1843,31 @@ def test_numbered_crop_rejects_idless_nearest_record_after_t_prefix_recovery() -
         candidate=artifact,
         candidate_identifiers_by_id=candidate_identifiers,
         page_number_identifiers=page_identifiers,
+    )
+    assert service._visual_candidate_identifier_compatibility(
+        record={
+            "fields": {
+                "artifact_id": {"value": "T03021:01", "evidence": []},
+                "category": {"value": "酱釉双耳罐", "evidence": []},
+            }
+        },
+        candidate={"id": "artifact-dropped-unit"},
+        candidate_identifiers_by_id={"artifact-dropped-unit": {"T0302:01"}},
+        page_number_identifiers={270: {"T0302:01"}},
+    )
+    assert (
+        service._visual_candidate_identifier_compatibility(
+            record={
+                "fields": {
+                    "artifact_id": {"value": "T03021:02", "evidence": []},
+                    "category": {"value": "青瓷碗", "evidence": []},
+                }
+            },
+            candidate={"id": "artifact-dropped-unit"},
+            candidate_identifiers_by_id={"artifact-dropped-unit": {"T0302:01"}},
+            page_number_identifiers={270: {"T0302:01"}},
+        )
+        is False
     )
     assert (
         service._visual_candidate_identifier_compatibility(

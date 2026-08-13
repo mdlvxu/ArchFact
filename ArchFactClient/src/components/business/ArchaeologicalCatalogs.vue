@@ -255,15 +255,17 @@ const selectedRecord = computed(
 
 watch(
   () => [props.selectedRecordId, props.activeAnnotationId] as const,
-  async ([recordId]) => {
+  async ([recordId], previous) => {
     if (!recordId) return
+    // Skip the initial mount sync so tab switches / remounts do not yank the list.
+    // Only follow real selection changes after the catalog is already on screen.
+    if (previous === undefined) return
     await nextTick()
     const entry = Array.from(
       catalogScrollRef.value?.querySelectorAll<HTMLElement>('[data-record-id]') ?? [],
     ).find((element) => element.dataset.recordId === recordId)
     entry?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
   },
-  { immediate: true },
 )
 
 function displayValue(value: unknown) {

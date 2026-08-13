@@ -3,6 +3,7 @@ import asyncio
 from app.main import app
 from app.models.schemas import RematchChangesView, RematchCreate, VerificationItemUpdate
 from app.repositories.mongo_repository import MongoRepository
+from app.services.page_discovery import PageDiscoveryService
 from app.services.rematch_service import RematchService
 
 
@@ -23,6 +24,38 @@ def test_rematch_defaults_to_preview_and_preserves_reviewed_links() -> None:
 
     assert payload.apply_immediately is False
     assert payload.preserve_reviewed is True
+
+
+def test_rematch_reads_legacy_page_index_when_current_version_is_absent() -> None:
+    class Repository:
+        def __init__(self) -> None:
+            self.versions: list[str] = []
+
+        async def list_document_page_index(
+            self,
+            *,
+            document_id: str,
+            index_version: str,
+        ) -> list[dict]:
+            assert document_id == "doc-legacy"
+            self.versions.append(index_version)
+            if index_version == "1":
+                return [{"page_no": 26, "page_type": "color_plate"}]
+            return []
+
+    repository = Repository()
+    service = RematchService(
+        repository=repository,  # type: ignore[arg-type]
+        relation_matcher=None,  # type: ignore[arg-type]
+        result_fusion=None,  # type: ignore[arg-type]
+        entity_linker=None,  # type: ignore[arg-type]
+        dispatcher=None,  # type: ignore[arg-type]
+    )
+
+    pages = asyncio.run(service._load_page_index("doc-legacy"))
+
+    assert repository.versions == [PageDiscoveryService.version, "1"]
+    assert pages[0]["semantic_text_source"] is False
 
 
 def test_verification_failure_code_distinguishes_relation_errors() -> None:

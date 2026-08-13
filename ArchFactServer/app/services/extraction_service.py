@@ -323,6 +323,7 @@ class ExtractionService:
                 or page.get("needs_ocr")
                 or page.get("discovery_only")
                 or page.get("reference_index")
+                or page.get("semantic_text_source") is False
             ):
                 return
             await ensure_extraction_run()
@@ -432,7 +433,6 @@ class ExtractionService:
                 if (
                     self._page_discovery.enabled
                     and requested_pages
-                    and not full_document_request
                     and not retry_mode
                 ):
                     discovery_run = await self._repository.create_model_run(
@@ -445,6 +445,18 @@ class ExtractionService:
                             "thumbnail_scale": self._settings.discovery_thumbnail_scale,
                             "ocr_render_scale": self._settings.discovery_ocr_render_scale,
                             "ocr_max_pages": self._settings.discovery_ocr_max_pages,
+                            "color_ratio_threshold": (
+                                self._settings.discovery_color_ratio_threshold
+                            ),
+                            "color_chroma_threshold": (
+                                self._settings.discovery_color_chroma_threshold
+                            ),
+                            "color_tile_ratio_threshold": (
+                                self._settings.discovery_color_tile_ratio_threshold
+                            ),
+                            "color_run_min_pages": (
+                                self._settings.discovery_color_run_min_pages
+                            ),
                         },
                     )
                     discovery_run_id = discovery_run["_id"]
@@ -519,7 +531,7 @@ class ExtractionService:
                     on_progress=report_preparation_progress,
                 )
 
-                if discovery_index and requested_pages:
+                if discovery_index and requested_pages and not full_document_request:
                     try:
                         requested_references = self._page_discovery.references_from_pages(
                             prepared.pages
@@ -609,6 +621,57 @@ class ExtractionService:
                         status="completed",
                     )
                     active_model_run_ids.discard(discovery_run_id)
+
+            if discovery_index:
+                discovery_by_page = {
+                    int(item["page_no"]): item
+                    for item in discovery_index
+                    if isinstance(item.get("page_no"), int)
+                }
+                index_roles_changed = False
+                role_keys = (
+                    "classifier_version",
+                    "page_type",
+                    "raw_page_type",
+                    "classification_confidence",
+                    "classification_reason",
+                    "semantic_text_source",
+                    "linkage_ocr_enabled",
+                    "visual_detection_enabled",
+                    "color_ratio",
+                    "foreground_color_ratio",
+                    "color_tile_ratio",
+                    "chroma_p95",
+                    "dark_ratio",
+                    "edge_ratio",
+                    "visual_score",
+                )
+                for page in prepared.pages:
+                    metadata = discovery_by_page.get(int(page["page_no"]))
+                    if metadata is None:
+                        continue
+                    if (
+                        metadata.get("page_type") == "blank"
+                        and str(page.get("text") or "").strip()
+                    ):
+                        metadata.update(
+                            page_type="document",
+                            classification_confidence=0.86,
+                            classification_reason="full_ocr_text_recovery",
+                            semantic_text_source=True,
+                            linkage_ocr_enabled=True,
+                            visual_detection_enabled=True,
+                        )
+                        index_roles_changed = True
+                    for key in role_keys:
+                        if key in metadata:
+                            page[key] = metadata[key]
+                if index_roles_changed:
+                    await self._repository.replace_document_page_index(
+                        document_id=document["_id"],
+                        index_version=self._page_discovery.version,
+                        pages=discovery_index,
+                    )
 
             reference_index_pages = PageSemantics.mark_prepared_pages(prepared.pages)
             preparation_update: dict[str, Any] = {
@@ -828,6 +891,7 @@ class ExtractionService:
                 and not page.get("needs_ocr")
                 and not page.get("discovery_only")
                 and not page.get("reference_index")
+                and page.get("semantic_text_source") is not False
                 for page in prepared.pages
             ):
                 await ensure_extraction_run()
@@ -952,6 +1016,7 @@ class ExtractionService:
                     and not page.get("needs_ocr")
                     and not page.get("discovery_only")
                     and not page.get("reference_index")
+                    and page.get("semantic_text_source") is not False
                 ):
                     try:
                         await self._repository.update_job(job_id, stage="semantic_extraction")
@@ -1585,6 +1650,11 @@ class ExtractionService:
                         "text": str(block.get("text", "")),
                         "confidence": block.get("confidence", 1.0),
                         "source": block.get("source", "pdf_text_layer"),
+                        "evidence_role": (
+                            "semantic_text"
+                            if page.get("semantic_text_source") is not False
+                            else "linkage_only"
+                        ),
                         "model_run_id": page.get("text_model_run_id", model_run_id),
                         "image_id": None,
                         "crop_object_key": None,

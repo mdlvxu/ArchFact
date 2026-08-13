@@ -125,3 +125,31 @@ def test_duplicate_id_prefers_nearest_document_context() -> None:
 
     assert enriched["document_context_pages"] == [145]
     assert enriched["document_context"]["region_ids"] == ["reg_145"]
+
+
+def test_linkage_only_color_page_is_excluded_from_body_text_index() -> None:
+    indexer = DocumentTextIndexer()
+
+    index = indexer.build(
+        job_id="job_1",
+        document_id="doc_1",
+        pages=[
+            {
+                "page_no": 26,
+                "page_type": "color_plate",
+                "semantic_text_source": False,
+                "blocks": [_block("3.陶尊（M1:19）", "color-caption")],
+            },
+            {
+                "page_no": 132,
+                "page_type": "document",
+                "semantic_text_source": True,
+                "blocks": [_block("M1:19 陶尊，高领，折沿。", "body-text")],
+            },
+        ],
+    )
+
+    assert index.artifact_mentions["M1:19"]
+    assert len(index.chunks) == 1
+    assert index.chunks[0]["source_pages"] == [132]
+    assert index.chunks[0]["region_ids"] == ["body-text"]

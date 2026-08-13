@@ -82,10 +82,7 @@ class RematchService:
             records_raw = await self._repository.list_job_records(job_id)
             relations_raw = await self._repository.list_job_relations(job_id)
             entities_raw = await self._repository.list_job_entities(job_id)
-            page_index_raw = await self._repository.list_document_page_index(
-                document_id=str(job["document_id"]),
-                index_version=PageDiscoveryService.version,
-            )
+            page_index_raw = await self._load_page_index(str(job["document_id"]))
             regions = [self._domain_item(region) for region in regions_raw]
             records = [self._clean_record(record) for record in records_raw]
             page_metadata = {
@@ -276,6 +273,26 @@ class RematchService:
                 completed_at=utc_now(),
                 progress={"current": 0, "total": 0, "percent": 0, "stage": "failed"},
             )
+
+    async def _load_page_index(self, document_id: str) -> list[dict[str, Any]]:
+        """Prefer current classification metadata, with read-only legacy fallback."""
+
+        versions = [PageDiscoveryService.version]
+        if PageDiscoveryService.version != "1":
+            versions.append("1")
+        for version in versions:
+            pages = await self._repository.list_document_page_index(
+                document_id=document_id,
+                index_version=version,
+            )
+            if not pages:
+                continue
+            if version != PageDiscoveryService.version:
+                for page in pages:
+                    if page.get("page_type") in {"color_plate", "color_visual"}:
+                        page.setdefault("semantic_text_source", False)
+            return pages
+        return []
 
     async def _ensure_not_cancelled(self, rematch_id: str) -> None:
         run = await self._repository.get_rematch_run_by_id(rematch_id)

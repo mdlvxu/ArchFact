@@ -1,4 +1,5 @@
-from typing import Annotated
+from datetime import datetime, timezone
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Query, status
 from fastapi.responses import FileResponse
@@ -424,6 +425,16 @@ async def enrich_records_with_paragraph_fields(
     return persisted
 
 
+def _coerce_record_timestamp(record: dict[str, Any], *keys: str) -> datetime:
+    """Older restored/rematch payloads may omit created_at; keep list APIs readable."""
+
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, datetime):
+            return value
+    return datetime.now(timezone.utc)
+
+
 def build_record_view(record: dict, *, compact: bool = False) -> ExtractionRecordView:
     linkage = record.get("linkage", {})
     if compact:
@@ -437,9 +448,9 @@ def build_record_view(record: dict, *, compact: bool = False) -> ExtractionRecor
     return ExtractionRecordView(
         id=record["_id"],
         job_id=record["job_id"],
-        record_type=record["record_type"],
-        source_pages=record["source_pages"],
-        fields=record["fields"],
+        record_type=record.get("record_type", "artifact"),
+        source_pages=record.get("source_pages", []),
+        fields=record.get("fields", {}),
         text_evidence=[] if compact else record.get("text_evidence", []),
         linkage=linkage,
         link_hints=record.get("link_hints", {}),
@@ -459,7 +470,7 @@ def build_record_view(record: dict, *, compact: bool = False) -> ExtractionRecor
         entity_id=record.get("entity_id"),
         entity_confidence=record.get("entity_confidence"),
         entity_match_status=record.get("entity_match_status", "unlinked"),
-        created_at=record["created_at"],
+        created_at=_coerce_record_timestamp(record, "created_at", "updated_at"),
     )
 
 

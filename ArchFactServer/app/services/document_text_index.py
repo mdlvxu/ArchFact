@@ -21,7 +21,7 @@ class DocumentTextIndexer:
 
     provider = "archfact"
     model = "document-ocr-logical-index"
-    version = "1"
+    version = "2"
 
     _artifact_pattern = re.compile(
         r"(?<![A-Za-z0-9])"
@@ -181,6 +181,10 @@ class DocumentTextIndexer:
     def _ordered_blocks(self, pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for page in sorted(pages, key=lambda item: int(item["page_no"])):
+            # Color-plate OCR is retained in source_regions for linkage, but it
+            # must never become paragraph context or body-field evidence.
+            if page.get("semantic_text_source") is False:
+                continue
             page_no = int(page["page_no"])
             for reading_order, source in enumerate(page.get("blocks", [])):
                 text = str(source.get("text") or "").strip()

@@ -357,7 +357,21 @@ async function pollExtractionJob(jobId: string) {
     applyJobState(job)
 
     if (job.status === 'completed' || job.status === 'completed_with_warnings') {
-      extractionRecords.value = await getExtractionRecords(jobId)
+      if (!pdfPages.value.length && job.document_id) {
+        try {
+          await hydrateJobDocumentPages(job)
+        } catch {
+          // Keep completion flow even if page thumbnails fail to hydrate.
+        }
+      }
+      try {
+        extractionRecords.value = await getExtractionRecords(jobId)
+      } catch (recordsError: unknown) {
+        extractionRecords.value = []
+        ElMessage.warning(
+          recordsError instanceof Error ? recordsError.message : t('home.progressFailed'),
+        )
+      }
       previewMode.value = 'browse'
       verificationSession.value = null
       verificationRecords.value = []
@@ -1060,36 +1074,17 @@ async function restoreLatestExtractionResult() {
       return
     }
 
-    const [records, images, documentInfo] = await Promise.all([
-      getExtractionRecords(job.id),
-      getDocumentImages(job.document_id),
-      getUploadedDocument(job.document_id),
-    ])
-    const pageImages = new Map(
-      images
-        .filter((image) => image.image_type === 'page_render')
-        .map((image) => [image.page_no, image]),
-    )
-    const discoveredPageNumbers = extractionTaskPages.value.length
-      ? extractionTaskPages.value
-      : [...new Set(records.flatMap((record) => record.source_pages))].sort((a, b) => a - b)
-    const pageNumbers = documentInfo.page_count
-      ? Array.from({ length: documentInfo.page_count }, (_, index) => index + 1)
-      : discoveredPageNumbers
-
-    pdfFileName.value = documentInfo.filename
-    pdfPages.value = pageNumbers.map((page) => {
-      const image = pageImages.get(page)
-      return {
-        page,
-        thumbnailUrl: image
-          ? getDocumentImageContentUrl(job.document_id, image.image_id)
-          : '',
-        loading: false,
-      }
-    })
-    extractionRecords.value = records
-    activePage.value = pageNumbers[0] ?? 1
+    // Load document pages first so a records API failure never leaves a full
+    // progress bar with an empty "please upload PDF" navigator.
+    await hydrateJobDocumentPages(job)
+    try {
+      extractionRecords.value = await getExtractionRecords(job.id)
+    } catch (recordsError: unknown) {
+      extractionRecords.value = []
+      ElMessage.warning(
+        recordsError instanceof Error ? recordsError.message : t('home.progressFailed'),
+      )
+    }
     previewMode.value = 'browse'
     previewSelectedPage.value = null
     activeTab.value = 'Data Preview'
@@ -1097,6 +1092,40 @@ async function restoreLatestExtractionResult() {
     globalThis.localStorage.removeItem(lastExtractionJobStorageKey)
     ElMessage.warning(error instanceof Error ? error.message : t('home.progressFailed'))
   }
+}
+
+async function hydrateJobDocumentPages(job: ExtractionJob) {
+  const [images, documentInfo] = await Promise.all([
+    getDocumentImages(job.document_id).catch(() => []),
+    getUploadedDocument(job.document_id),
+  ])
+  const pageImages = new Map(
+    images
+      .filter((image) => image.image_type === 'page_render')
+      .map((image) => [image.page_no, image]),
+  )
+  const discoveredPageNumbers = extractionTaskPages.value.length
+    ? extractionTaskPages.value
+    : [...new Set(extractionRecords.value.flatMap((record) => record.source_pages))].sort(
+        (a, b) => a - b,
+      )
+  const pageNumbers = documentInfo.page_count
+    ? Array.from({ length: documentInfo.page_count }, (_, index) => index + 1)
+    : discoveredPageNumbers
+
+  pdfFileName.value = documentInfo.filename
+  serverDocumentId.value = job.document_id
+  pdfPages.value = pageNumbers.map((page) => {
+    const image = pageImages.get(page)
+    return {
+      page,
+      thumbnailUrl: image
+        ? getDocumentImageContentUrl(job.document_id, image.image_id)
+        : '',
+      loading: false,
+    }
+  })
+  activePage.value = pageNumbers[0] ?? 1
 }
 
 onMounted(() => {
@@ -1186,7 +1215,7 @@ onBeforeUnmount(() => {
     </nav>
 
     <main
-      v-if="activeTab === 'Data Extraction'"
+      v-show="activeTab === 'Data Extraction'"
       class="workspace__content"
     >
       <PageNavigator
@@ -1231,7 +1260,7 @@ onBeforeUnmount(() => {
     </main>
 
     <main
-      v-else-if="activeTab === 'Data Preview'"
+      v-show="activeTab === 'Data Preview'"
       class="preview-workspace"
       :class="{ 'preview-workspace--selected': previewSelectedPage !== null }"
     >
@@ -1307,7 +1336,7 @@ onBeforeUnmount(() => {
     </main>
 
     <main
-      v-else
+      v-if="activeTab === 'Machine Verification'"
       class="machine-workspace-page"
     >
       <MachineVerificationWorkspace

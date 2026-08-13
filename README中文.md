@@ -14,8 +14,8 @@ ArchFact 是一个面向考古报告 PDF 的信息提取与人工核验平台。
 
 ## 版本基线
 
-- 当前推荐标签：[`quality-baseline-v2`](https://github.com/mdlvxu/ArchFact/releases/tag/quality-baseline-v2)（2026-08-12）
-- 上一基线：`quality-baseline-v1`（2026-07-28）
+- 当前推荐标签：[`quality-baseline-v3`](https://github.com/mdlvxu/ArchFact/releases/tag/quality-baseline-v3)（2026-08-13）
+- 上一基线：`quality-baseline-v2`（2026-08-12）· `quality-baseline-v1`（2026-07-28）
 - 变更说明：[CHANGELOG中文.md](./CHANGELOG中文.md)（中文）· [CHANGELOG.md](./CHANGELOG.md)（English）
 - 前后端子项目说明：`ArchFactClient/BASELINE.md`、`ArchFactServer/BASELINE.md`
 

@@ -35,7 +35,7 @@ class PageDiscoveryService:
 
     provider = "archfact"
     model = "whole-document-page-discovery"
-    version = "1"
+    version = "2"
     _artifact_pattern = re.compile(
         r"(?<![A-Za-z0-9])([A-Za-z]{1,5}\s*\d+[A-Za-z]?(?:\s*[:：]\s*[A-Za-z0-9]+)+)"
     )
@@ -110,6 +110,7 @@ class PageDiscoveryService:
                 )
                 if not unresolved:
                     break
+        self._refine_page_types(pages)
         return pages
 
     def references_from_pages(self, pages: list[dict[str, Any]]) -> set[str]:
@@ -146,6 +147,7 @@ class PageDiscoveryService:
             page_type = str(page.get("page_type", "document"))
             type_bonus = {
                 "color_plate": 0.35,
+                "color_visual": 0.3,
                 "monochrome_visual": 0.25,
                 "mixed_visual": 0.2,
             }.get(page_type, 0.0)
@@ -210,25 +212,24 @@ class PageDiscoveryService:
                     drawing_count = len(page.get_drawings())
                     visual = self._visual_features(page)
                     references = self.extract_references(text)
+                    classification = self._classify_page(
+                        text=text,
+                        references=references,
+                        image_count=image_count,
+                        **visual,
+                    )
                     pages.append(
                         {
                             "page_no": page_no,
                             "index_version": self.version,
+                            "classifier_version": self.version,
                             "has_text_layer": bool(text),
                             "text_char_count": len(text),
                             "text_preview": text[: self._settings.discovery_text_preview_chars],
                             "image_count": image_count,
                             "drawing_count": drawing_count,
-                            "color_ratio": visual["color_ratio"],
-                            "dark_ratio": visual["dark_ratio"],
-                            "edge_ratio": visual["edge_ratio"],
-                            "visual_score": visual["visual_score"],
-                            "page_type": self._classify_page(
-                                text=text,
-                                references=references,
-                                image_count=image_count,
-                                **visual,
-                            ),
+                            **visual,
+                            **classification,
                             "references": sorted(references),
                             "discovery_ocr_attempted": False,
                             "discovery_ocr_status": "not_requested",
@@ -247,10 +248,19 @@ class PageDiscoveryService:
                             "image_count": 0,
                             "drawing_count": 0,
                             "color_ratio": 0.0,
+                            "foreground_color_ratio": 0.0,
+                            "color_tile_ratio": 0.0,
+                            "chroma_p95": 0.0,
                             "dark_ratio": 0.0,
                             "edge_ratio": 0.0,
                             "visual_score": 0.0,
                             "page_type": "unknown",
+                            "raw_page_type": "unknown",
+                            "classification_confidence": 0.0,
+                            "classification_reason": "page_scan_failed",
+                            "semantic_text_source": True,
+                            "linkage_ocr_enabled": True,
+                            "visual_detection_enabled": True,
                             "references": [],
                             "discovery_ocr_attempted": False,
                             "discovery_ocr_status": "failed",
@@ -258,6 +268,7 @@ class PageDiscoveryService:
                             "error": str(exc),
                         }
                     )
+        self._refine_page_types(pages)
         return page_count, pages
 
     def _visual_features(self, page: fitz.Page) -> dict[str, float]:
@@ -273,20 +284,70 @@ class PageDiscoveryService:
         image.thumbnail((180, 240))
         pixels = list(image.get_flattened_data())
         total = max(len(pixels), 1)
-        color_pixels = sum(max(pixel) - min(pixel) >= 24 and max(pixel) <= 250 for pixel in pixels)
+        chroma_threshold = self._settings.discovery_color_chroma_threshold
+        saturation_threshold = self._settings.discovery_color_saturation_threshold
+        color_mask: list[bool] = []
+        chroma_values: list[int] = []
+        foreground_pixels = 0
+        color_pixels = 0
+        for pixel in pixels:
+            maximum = max(pixel)
+            minimum = min(pixel)
+            chroma = maximum - minimum
+            saturation = chroma / max(maximum, 1)
+            foreground = minimum < 245 or chroma >= chroma_threshold
+            is_color = (
+                foreground
+                and 24 <= maximum <= 252
+                and chroma >= chroma_threshold
+                and saturation >= saturation_threshold
+            )
+            foreground_pixels += int(foreground)
+            color_pixels += int(is_color)
+            color_mask.append(is_color)
+            chroma_values.append(chroma)
         gray = image.convert("L")
         gray_pixels = list(gray.get_flattened_data())
         dark_pixels = sum(value < 220 for value in gray_pixels)
         edges = gray.filter(ImageFilter.FIND_EDGES)
         edge_pixels = sum(value > 28 for value in edges.get_flattened_data())
         color_ratio = color_pixels / total
+        foreground_color_ratio = color_pixels / max(foreground_pixels, 1)
+        sorted_chroma = sorted(chroma_values)
+        chroma_p95 = sorted_chroma[min(len(sorted_chroma) - 1, int(total * 0.95))]
+        tile_columns = 6
+        tile_rows = 8
+        colored_tiles = 0
+        for tile_y in range(tile_rows):
+            top = tile_y * image.height // tile_rows
+            bottom = max(top + 1, (tile_y + 1) * image.height // tile_rows)
+            for tile_x in range(tile_columns):
+                left = tile_x * image.width // tile_columns
+                right = max(left + 1, (tile_x + 1) * image.width // tile_columns)
+                tile_total = max((right - left) * (bottom - top), 1)
+                tile_colors = sum(
+                    color_mask[y * image.width + x]
+                    for y in range(top, bottom)
+                    for x in range(left, right)
+                )
+                colored_tiles += int(tile_colors / tile_total >= 0.03)
+        color_tile_ratio = colored_tiles / (tile_columns * tile_rows)
         dark_ratio = dark_pixels / total
         edge_ratio = edge_pixels / total
         return {
             "color_ratio": round(color_ratio, 5),
+            "foreground_color_ratio": round(foreground_color_ratio, 5),
+            "color_tile_ratio": round(color_tile_ratio, 5),
+            "chroma_p95": round(float(chroma_p95), 2),
             "dark_ratio": round(dark_ratio, 5),
             "edge_ratio": round(edge_ratio, 5),
-            "visual_score": round(color_ratio * 4 + edge_ratio * 2 + dark_ratio, 5),
+            "visual_score": round(
+                color_ratio * 4
+                + color_tile_ratio * 1.5
+                + edge_ratio * 2
+                + dark_ratio,
+                5,
+            ),
         }
 
     def _classify_page(
@@ -296,24 +357,128 @@ class PageDiscoveryService:
         references: set[str],
         image_count: int,
         color_ratio: float,
+        foreground_color_ratio: float,
+        color_tile_ratio: float,
+        chroma_p95: float,
         dark_ratio: float,
         edge_ratio: float,
         visual_score: float,
-    ) -> str:
+    ) -> dict[str, Any]:
         del visual_score
-        if color_ratio >= self._settings.discovery_color_ratio_threshold:
-            return "color_plate"
         has_plate_reference = any(reference.startswith("plate:") for reference in references)
         has_figure_reference = any(reference.startswith("figure:") for reference in references)
+        color_threshold = self._settings.discovery_color_ratio_threshold
+        tile_threshold = self._settings.discovery_color_tile_ratio_threshold
+        is_color_visual = (
+            color_ratio >= color_threshold
+            and (
+                color_tile_ratio >= tile_threshold
+                or foreground_color_ratio >= 0.10
+                or chroma_p95 >= self._settings.discovery_color_chroma_threshold * 1.5
+            )
+        )
+        if is_color_visual:
+            page_type = (
+                "color_plate"
+                if has_plate_reference
+                else "mixed_visual"
+                if len(text) >= 500
+                else "color_visual"
+            )
+            margin = min(
+                color_ratio / max(color_threshold, 0.0001),
+                max(
+                    color_tile_ratio / max(tile_threshold, 0.0001),
+                    foreground_color_ratio / 0.10,
+                ),
+            )
+            confidence = min(0.99, 0.68 + max(0.0, margin - 1.0) * 0.12)
+            return self._classification(
+                page_type,
+                confidence=confidence,
+                reason=(
+                    "plate_reference_and_chromatic_content"
+                    if has_plate_reference
+                    else "dense_text_with_chromatic_content"
+                    if page_type == "mixed_visual"
+                    else "distributed_chromatic_content"
+                ),
+            )
         if has_plate_reference and image_count:
-            return "mixed_visual"
+            return self._classification(
+                "mixed_visual",
+                confidence=0.72,
+                reason="plate_reference_with_embedded_image",
+            )
         if has_figure_reference and (image_count or (len(text) <= 400 and edge_ratio >= 0.025)):
-            return "mixed_visual"
-        if 0.004 <= dark_ratio <= 0.42 and edge_ratio >= 0.018:
-            return "monochrome_visual"
+            return self._classification(
+                "mixed_visual",
+                confidence=0.72,
+                reason="figure_reference_with_visual_content",
+            )
+        if image_count and not text and dark_ratio >= 0.004:
+            return self._classification(
+                "monochrome_visual",
+                confidence=0.78,
+                reason="image_only_non_chromatic_page",
+            )
+        if 0.004 <= dark_ratio and edge_ratio >= 0.018:
+            return self._classification(
+                "monochrome_visual",
+                confidence=0.7,
+                reason="edge_dense_non_chromatic_content",
+            )
         if not text and dark_ratio < 0.004:
-            return "blank"
-        return "document"
+            return self._classification("blank", confidence=0.98, reason="near_empty_page")
+        return self._classification("document", confidence=0.68, reason="textual_page")
+
+    @staticmethod
+    def _classification(
+        page_type: str,
+        *,
+        confidence: float,
+        reason: str,
+    ) -> dict[str, Any]:
+        semantic_text_source = page_type not in {
+            "blank",
+            "color_plate",
+            "color_visual",
+        }
+        return {
+            "page_type": page_type,
+            "raw_page_type": page_type,
+            "classification_confidence": round(confidence, 4),
+            "classification_reason": reason,
+            "semantic_text_source": semantic_text_source,
+            "linkage_ocr_enabled": page_type != "blank",
+            "visual_detection_enabled": page_type != "blank",
+        }
+
+    def _refine_page_types(self, pages: list[dict[str, Any]]) -> None:
+        """Promote sustained color runs to plates without treating every color page as one."""
+
+        run: list[dict[str, Any]] = []
+
+        def flush() -> None:
+            nonlocal run
+            if len(run) >= self._settings.discovery_color_run_min_pages:
+                for page in run:
+                    if page.get("page_type") == "color_visual":
+                        page["page_type"] = "color_plate"
+                        page["classification_confidence"] = max(
+                            float(page.get("classification_confidence") or 0.0),
+                            0.82,
+                        )
+                        page["classification_reason"] = "sustained_color_plate_sequence"
+                        page["semantic_text_source"] = False
+            run = []
+
+        for page in sorted(pages, key=lambda item: int(item["page_no"])):
+            if page.get("page_type") in {"color_visual", "color_plate"}:
+                run.append(page)
+            else:
+                flush()
+        flush()
 
     def _ocr_candidates(
         self,
@@ -332,6 +497,8 @@ class PageDiscoveryService:
             priority = 0.0
             if wants_plate and page_type == "color_plate":
                 priority += 8.0
+            if wants_plate and page_type == "color_visual":
+                priority += 5.0
             if wants_figure and page_type in {"monochrome_visual", "mixed_visual"}:
                 priority += 6.0
             if wants_artifact and page_type in {
@@ -377,6 +544,20 @@ class PageDiscoveryService:
         page["discovery_ocr_status"] = "completed" if text else "empty"
         page["discovery_ocr_text_preview"] = text[: self._settings.discovery_text_preview_chars]
         page["references"] = sorted(set(page.get("references", [])) | self.extract_references(text))
+        if (
+            page.get("page_type") == "color_visual"
+            and any(
+                str(reference).startswith("plate:")
+                for reference in page.get("references", [])
+            )
+        ):
+            page["page_type"] = "color_plate"
+            page["classification_confidence"] = max(
+                float(page.get("classification_confidence") or 0.0),
+                0.9,
+            )
+            page["classification_reason"] = "ocr_plate_reference_on_color_page"
+            page["semantic_text_source"] = False
 
     def _render_discovery_pages_sync(
         self,
@@ -451,6 +632,7 @@ class PageDiscoveryService:
         if reference.startswith(("figure:", "plate:")):
             return page_type in {
                 "color_plate",
+                "color_visual",
                 "monochrome_visual",
                 "mixed_visual",
             }

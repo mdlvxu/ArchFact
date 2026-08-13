@@ -431,6 +431,24 @@ class MongoRepository:
                 "ocr_cache_hit": page.get("ocr_cache_hit", False),
                 "ocr_ms": page.get("ocr_ms", 0),
                 "text_model_run_id": page.get("text_model_run_id"),
+                "classifier_version": page.get("classifier_version"),
+                "page_type": page.get("page_type", "unknown"),
+                "raw_page_type": page.get("raw_page_type", "unknown"),
+                "classification_confidence": page.get(
+                    "classification_confidence", 0.0
+                ),
+                "classification_reason": page.get("classification_reason"),
+                "semantic_text_source": page.get("semantic_text_source", True),
+                "linkage_ocr_enabled": page.get("linkage_ocr_enabled", True),
+                "visual_detection_enabled": page.get(
+                    "visual_detection_enabled", True
+                ),
+                "color_ratio": page.get("color_ratio", 0.0),
+                "foreground_color_ratio": page.get(
+                    "foreground_color_ratio", 0.0
+                ),
+                "color_tile_ratio": page.get("color_tile_ratio", 0.0),
+                "chroma_p95": page.get("chroma_p95", 0.0),
                 "updated_at": utc_now(),
             }
             operations.append(
