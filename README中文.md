@@ -211,7 +211,7 @@ Set-Location ..\ArchFactServer
 
 ### 六、人工核验 18 条样本
 
-**目的：** 对固定样本逐条给出人工 **通过 / 不通过**，为后续 AI 复核与版本冻结提供人审结论。
+**目的：** 对固定样本逐条给出人工 **通过 / 不通过**，为后续 AI 复核与版本冻结提供人工审核结论。
 
 ![审核页面（中文）](ArchFactClient/docs/readme-images/data-preview-review-zh.png)
 
@@ -236,7 +236,7 @@ Set-Location ..\ArchFactServer
 
 ### 七、AI 复核进行中
 
-**目的：** 大模型对照自动结果、OCR 证据与金标准（若已绑定），给出 AI 结论并与人工结论比对。
+**目的：** 大模型对照自动结果、OCR 证据与黄金标准（若已绑定），给出 AI 结论并与人工结论比对。
 
 ![AI 复核中（中文）](ArchFactClient/docs/readme-images/data-preview-ai-reviewing-zh.png)
 
