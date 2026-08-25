@@ -236,7 +236,7 @@ Set-Location ..\ArchFactServer
 
 ### 七、AI 复核进行中
 
-**目的：** 大模型对照自动结果、OCR 证据与黄金标准（若已绑定），给出 AI 结论并与人工结论比对。
+**目的：** 大模型对照自动结果、OCR 证据与人工标注数据（若已绑定），给出 AI 结论并与人工结论比对。
 
 ![AI 复核中（中文）](ArchFactClient/docs/readme-images/data-preview-ai-reviewing-zh.png)
 

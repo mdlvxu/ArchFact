@@ -131,20 +131,20 @@ YOLO 时只需替换 `DetectionEngine` 实现，任务接口和前端不需要�
 | `GET` | `/api/v1/extraction-jobs/{job_id}/model-runs` | 查询阶段与模型运行记录 |
 | `PATCH` | `/api/v1/extraction-jobs/{job_id}/records/{record_id}/fields/{field_key}/review` | 字段级确认、驳回或修订 |
 | `GET` | `/api/v1/extraction-jobs/{job_id}/records/{record_id}/revisions` | 查询字段修订历史 |
-| `POST` | `/api/v1/gold-datasets/import/wenjiashan` | 把文家山人工标注绑定为指定 PDF 的独立评测金标准 |
+| `POST` | `/api/v1/gold-datasets/import/wenjiashan` | 把文家山人工标注数据绑定为指定 PDF 的独立评测数据 |
 | `GET` | `/api/v1/extraction-jobs/{job_id}/ai-verification-runs/{run_id}` | 查询异步 AI 复核进度与冲突数 |
 
 抽取证据中的 `bbox` 统一使用 `[left, top, right, bottom]`，四个值均为 0–1 的 PDF 页面
 相对坐标。证据可通过 `region_id` 和 `relation_ids` 追溯到检测区域及其配对关系。Coze
 只需返回原文 `quote`；Python 会根据解析后的 PDF 文本块补全坐标和区域 ID。
 
-## 金标准与 AI 复核
+## 人工标注数据与 AI 复核
 
-金标准存放在独立的 `gold_*` 集合中，不参与 OCR、结构化抽取、YOLO 检测或关系匹配，
+人工标注数据存放在独立的 `gold_*` 集合中，不参与 OCR、结构化抽取、YOLO 检测或关系匹配，
 只在 18 条固定样本完成人工 PASS/FAIL 后用于质量评测。图片继续保存在
 `GOLD_DATASET_ROOT`，MongoDB 的 `gold_assets.object_key` 只保存相对路径。
 
-首次使用时，把已上传的文家山 PDF 与金标准显式绑定：
+首次使用时，把已上传的文家山 PDF 与人工标注数据显式绑定：
 
 ```http
 POST /api/v1/gold-datasets/import/wenjiashan
@@ -155,7 +155,7 @@ Content-Type: application/json
 
 完成18条人工核验后，`complete` 接口会立即返回一个后台 AI 复核任务。前端轮询任务：
 AI 结束后始终以人工 PASS/FAIL 冻结 V 版本并跳转机器校验页；人机冲突仅写入版本报告，
-不再要求回到第二页逐条确认。大模型只收到自动结果、OCR证据和金标准，不会收到人工
+不再要求回到第二页逐条确认。大模型只收到自动结果、OCR证据和人工标注数据，不会收到人工
 PASS/FAIL，且复核结果不会反写生产抽取记录。
 
 ## 生产化边界
