@@ -45,7 +45,7 @@ async def import_wenjiashan_gold_dataset(
         replace=payload.replace,
     )
     return ApiResponse(
-        message="文家山金标准已导入，仅用于质量评测",
+        message="文家山人工标注数据已导入，仅用于质量评测",
         data=build_gold_dataset_view(dataset),
     )
 

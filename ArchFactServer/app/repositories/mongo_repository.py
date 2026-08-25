@@ -92,7 +92,7 @@ class MongoRepository:
     async def get_gold_dataset(self, dataset_id: str) -> dict[str, Any]:
         dataset = await self._db.gold_datasets.find_one({"_id": dataset_id})
         if dataset is None:
-            raise NotFoundError("金标准数据集不存在")
+            raise NotFoundError("人工标注数据集不存在")
         return dataset
 
     async def get_gold_dataset_for_document(

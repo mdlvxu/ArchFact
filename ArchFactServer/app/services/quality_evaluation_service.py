@@ -205,7 +205,7 @@ class QualityEvaluationService:
             )
         )
         if dataset is None or dataset.get("document_id") != job.get("document_id"):
-            raise DomainError("当前 PDF 尚未绑定可用的人工金标准")
+            raise DomainError("当前 PDF 尚未绑定可用的人工标注数据")
         run = await self._repository.create_quality_evaluation_run(
             job_id=job_id,
             document_id=job["document_id"],
@@ -534,7 +534,7 @@ class QualityEvaluationService:
         if not any(page_ocr.values()):
             warnings.append("当前文档没有可用的 OCR 文本，OCR 锚点指标暂不可计算。")
         warnings.append(
-            "金标准没有逐字整页转写，当前 OCR 指标是编号、尺寸和图注锚点命中率，"
+            "人工标注数据没有逐字整页转写，当前 OCR 指标是编号、尺寸和图注锚点命中率，"
             "不是字符错误率 CER。"
         )
 

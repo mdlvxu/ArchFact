@@ -111,14 +111,14 @@ class GoldDatasetService:
         labels_root = root / "labels"
         assets_root = root / "cutpictures"
         if not labels_root.is_dir() or not assets_root.is_dir():
-            raise DomainError("金标准目录缺少 labels 或 cutpictures 子目录")
+            raise DomainError("人工标注数据目录缺少 labels 或 cutpictures 子目录")
 
         existing = await self._repository.get_gold_dataset_for_document(
             document_id=document_id,
             version=version,
         )
         if existing and not replace:
-            raise ConflictError("该 PDF 的同版本金标准已导入；如需重建请使用 replace=true")
+            raise ConflictError("该 PDF 的同版本人工标注数据已导入；如需重建请使用 replace=true")
 
         dataset_id = existing["_id"] if existing else stable_id("gold", document_id, version)
         records = self._read_records(workbook_path, dataset_id)
@@ -134,7 +134,7 @@ class GoldDatasetService:
         )
         warnings: list[str] = []
         if source_document_verified is None:
-            warnings.append("未找到配套源 PDF，金标准绑定未执行文件指纹确认")
+            warnings.append("未找到配套源 PDF，人工标注数据绑定未执行文件指纹确认")
         artifact_expected = sum(bool(record["canonical_artifact_id"]) for record in records)
         if artifact_matches < artifact_expected:
             warnings.append(f"{artifact_expected - artifact_matches} 条记录未找到同名器物裁剪图")
@@ -145,7 +145,7 @@ class GoldDatasetService:
         now = utc_now()
         dataset = {
             "_id": dataset_id,
-            "name": "文家山人工核对金标准",
+            "name": "文家山人工标注数据",
             "document_id": document_id,
             "document_filename": document.get("filename", ""),
             "version": version,
@@ -185,14 +185,14 @@ class GoldDatasetService:
             else (project_root / configured).resolve()
         )
         if not root.is_dir():
-            raise DomainError(f"金标准目录不存在：{root}")
+            raise DomainError(f"人工标注数据目录不存在：{root}")
         return root
 
     @staticmethod
     def _find_workbook(root: Path) -> Path:
         candidates = sorted(path for path in root.glob("*.xlsx") if not path.name.startswith("~$"))
         if not candidates:
-            raise DomainError("金标准目录中没有找到 xlsx 文件")
+            raise DomainError("人工标注数据目录中没有找到 xlsx 文件")
         return candidates[0]
 
     @staticmethod
@@ -210,7 +210,7 @@ class GoldDatasetService:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         if digest.hexdigest() != document.get("sha256"):
-            raise ConflictError("上传的 PDF 与文家山金标准配套源文件指纹不一致，已拒绝绑定")
+            raise ConflictError("上传的 PDF 与文家山人工标注数据配套源文件指纹不一致，已拒绝绑定")
         return True
 
     @staticmethod

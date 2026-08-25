@@ -133,7 +133,7 @@ class VerificationService:
             document_id=job["document_id"]
         )
         if dataset is not None and not self._settings.llm_api_key:
-            raise DomainError("已绑定金标准，但尚未配置 LLM_API_KEY，无法启动 AI 复核")
+            raise DomainError("已绑定人工标注数据，但尚未配置 LLM_API_KEY，无法启动 AI 复核")
         updated, run = await self._repository.create_ai_verification_run(
             job_id=job_id,
             session_id=session_id,
@@ -272,7 +272,7 @@ class VerificationService:
         visual_context: dict[str, Any],
     ) -> dict[str, Any]:
         if dataset is None:
-            return self._unavailable_result("当前 PDF 未绑定专属金标准，保留人工结论")
+            return self._unavailable_result("当前 PDF 未绑定专属人工标注数据，保留人工结论")
         artifact_id = self._record_artifact_id(record)
         if not artifact_id:
             return self._ambiguous_result("自动结果缺少可匹配的器物编号")
@@ -281,9 +281,9 @@ class VerificationService:
             canonical_artifact_id=artifact_id,
         )
         if not matches:
-            return self._ambiguous_result(f"金标准中未找到器物编号 {artifact_id}")
+            return self._ambiguous_result(f"人工标注数据中未找到器物编号 {artifact_id}")
         if len(matches) > 1:
-            return self._ambiguous_result(f"金标准中器物编号 {artifact_id} 存在多条记录")
+            return self._ambiguous_result(f"人工标注数据中器物编号 {artifact_id} 存在多条记录")
 
         gold = matches[0]
         assets = await self._repository.get_gold_record_assets(
@@ -324,7 +324,7 @@ class VerificationService:
                 {
                     "field": "color_plate",
                     "verdict": "passed" if visual_context["color_plate_present"] else "failed",
-                    "reason": "金标准含彩图引用，检查当前关系链是否关联彩图区域",
+                    "reason": "人工标注数据含彩图引用，检查当前关系链是否关联彩图区域",
                     "method": "deterministic_relation_presence",
                 }
             )
@@ -384,7 +384,7 @@ class VerificationService:
                 {
                     "role": "system",
                     "content": (
-                        "你是考古器物数据质量复核员。只比较自动抽取结果、OCR原文证据与人工金标准。"
+                        "你是考古器物数据质量复核员。只比较自动抽取结果、OCR原文证据与人工标注数据。"
                         "人工审核结论不会提供给你。不得改写生产数据。语义等价、单位等价和合理OCR纠错可判通过；"
                         "关键信息矛盾、遗漏或无证据推断判不通过；无法确定则判uncertain。只输出JSON。"
                     ),
