@@ -209,7 +209,7 @@ LLM_MODEL=<AVAILABLE_MODEL_NAME>
 - `ArchFactServer/.runtime/files`
 - `ArchFactServer/models/archaeology-yolo/v1/best.pt`
 - `%USERPROFILE%/.paddleocr`
-- 人工标注、金标准和训练数据
+- 人工标注数据、训练数据
 
 不要复制：
 
