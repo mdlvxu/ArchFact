@@ -62,7 +62,6 @@ describe('groupCatalogRecordsByEntity', () => {
 
     expect(groupCatalogRecordsByEntity(records).map((item) => item.id)).toEqual([
       'text-record',
-      'unlinked-record',
     ])
   })
 
@@ -87,11 +86,49 @@ describe('groupCatalogRecordsByEntity', () => {
 
   it('does not merge unlinked records merely because their field values match', () => {
     const records = [
-      record('first', 10, null, { artifact_id: field('M1:1', 10) }),
-      record('second', 20, null, { artifact_id: field('M1:1', 20) }),
+      {
+        ...record('first', 10, null, {
+          artifact_id: field('M1:1', 10),
+          morphological_description: field('泥质灰陶罐', 10),
+          measurements: field('口径 12 厘米', 10),
+          texture: field('泥质灰陶', 10),
+        }),
+        associated_pages: [10, 80],
+      },
+      {
+        ...record('second', 20, null, {
+          artifact_id: field('M1:1', 20),
+          morphological_description: field('泥质灰陶罐', 20),
+          measurements: field('口径 12 厘米', 20),
+          texture: field('泥质灰陶', 20),
+        }),
+        associated_pages: [20, 90],
+      },
     ]
 
     expect(groupCatalogRecordsByEntity(records)).toHaveLength(2)
+  })
+
+  it('hides single-page cards that never bound a line drawing', () => {
+    const records = [
+      record('id-only', 128, null, { artifact_id: field('M11:66', 128) }),
+      record('caption-only', 142, null, {
+        artifact_id: field('M1:12', 142),
+        figure_caption: field('图三', 142),
+      }),
+      {
+        ...record('with-drawing', 139, 'ent-1', {
+          artifact_id: field('M1:65', 139),
+          morphological_description: field('泥质灰陶', 139),
+        }),
+        thumbnail_region_id: 'artifact-139',
+        primary_artifact_region_id: 'artifact-139',
+      },
+    ]
+
+    expect(groupCatalogRecordsByEntity(records).map((item) => item.id)).toEqual([
+      'with-drawing',
+    ])
   })
 })
 

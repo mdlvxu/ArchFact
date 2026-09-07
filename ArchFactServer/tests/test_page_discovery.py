@@ -142,3 +142,15 @@ def test_small_color_stamp_does_not_disable_body_text(tmp_path: Path) -> None:
 
     assert page_index["page_type"] not in {"color_plate", "color_visual"}
     assert page_index["semantic_text_source"] is True
+
+
+def test_discovery_ocr_budget_scales_for_long_reports() -> None:
+    assert PageDiscoveryService.scaled_discovery_ocr_max_pages(80, 40) == 80
+    assert PageDiscoveryService.scaled_discovery_ocr_max_pages(80, 275) == 124
+    assert PageDiscoveryService.scaled_discovery_ocr_max_pages(0, 275) == 0
+
+
+def test_discovery_recall_budget_scales_for_long_reports() -> None:
+    assert PageDiscoveryService.scaled_discovery_recall_max_pages(24, 24) == 24
+    assert PageDiscoveryService.scaled_discovery_recall_max_pages(24, 275) == 42
+    assert PageDiscoveryService.scaled_discovery_recall_max_pages(10, 12) == 10

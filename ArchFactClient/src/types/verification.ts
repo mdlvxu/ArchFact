@@ -26,6 +26,7 @@ export interface VerificationItem {
   relation_signature?: string
   relation_changed?: boolean
   sampling_strata?: string[]
+  expected_label?: 'correct' | 'incorrect' | null
   stale?: boolean
   reviewed_at: string | null
   ai_verdict?: 'passed' | 'failed' | 'uncertain' | null
@@ -34,7 +35,7 @@ export interface VerificationItem {
   ai_field_results?: Array<Record<string, unknown>>
   gold_record_id?: string | null
   gold_match_status?: 'matched' | 'not_found' | 'ambiguous' | 'unavailable' | null
-  consensus_status?: 'pending' | 'agreed' | 'conflict' | 'human_resolved' | 'benchmark_unavailable'
+  consensus_status?: 'pending' | 'agreed' | 'conflict' | 'human_resolved' | 'benchmark_unavailable' | 'machine_verified'
   conflict_resolved?: boolean
 }
 

@@ -264,7 +264,7 @@ def test_mark_stale_active_rematch_runs_finalizes_orphans() -> None:
     assert "重启" in update["$set"]["error"]
 
 
-def test_mark_stale_active_extraction_jobs_freezes_completed_at() -> None:
+def test_finalize_cancelling_extraction_jobs_freezes_completed_at() -> None:
     class Collection:
         def __init__(self) -> None:
             self.calls: list[tuple[dict, object]] = []
@@ -284,16 +284,126 @@ def test_mark_stale_active_extraction_jobs_freezes_completed_at() -> None:
     repository = MongoRepository.__new__(MongoRepository)
     repository._db = Database()  # type: ignore[attr-defined]
 
-    modified = asyncio.run(repository.mark_stale_active_extraction_jobs())
+    modified = asyncio.run(repository.finalize_cancelling_extraction_jobs())
 
     assert modified == 1
     query, update = repository._db.extraction_jobs.calls[0]  # type: ignore[attr-defined]
-    assert "extracting" in query["status"]["$in"]
-    assert "queued" in query["status"]["$in"]
+    assert query["$or"][0]["status"] == "cancelling"
+    assert "extracting" in query["$or"][1]["status"]["$in"]
     assert isinstance(update, list)
     assert update[0]["$set"]["completed_at"] == {"$ifNull": ["$completed_at", "$updated_at"]}
-    assert update[1]["$set"]["status"] == "failed"
-    assert "重启" in update[1]["$set"]["error"]
+    assert update[1]["$set"]["status"] == "cancelled"
+
+
+def test_list_resumable_extraction_jobs_skips_cancel_requested() -> None:
+    class Cursor:
+        async def to_list(self, length: int) -> list[dict]:
+            del length
+            return [{"_id": "job_1"}]
+
+    class Collection:
+        def __init__(self) -> None:
+            self.query: dict | None = None
+
+        def find(self, query):  # noqa: ANN001
+            self.query = query
+            return Cursor()
+
+    class Database:
+        def __init__(self) -> None:
+            self.extraction_jobs = Collection()
+
+    repository = MongoRepository.__new__(MongoRepository)
+    repository._db = Database()  # type: ignore[attr-defined]
+
+    jobs = asyncio.run(repository.list_resumable_extraction_jobs())
+
+    assert jobs[0]["_id"] == "job_1"
+    query = repository._db.extraction_jobs.query  # type: ignore[attr-defined]
+    assert "extracting" in query["status"]["$in"]
+    assert "cancelling" not in query["status"]["$in"]
+    assert query["cancel_requested"] == {"$ne": True}
+
+
+def test_mark_stale_active_verification_runs_resets_ai_review_sessions() -> None:
+    class Collection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[dict, dict]] = []
+
+        async def update_many(self, query, update):  # noqa: ANN001
+            self.calls.append((query, update))
+
+            class Result:
+                modified_count = 2
+
+            return Result()
+
+    class Database:
+        def __init__(self) -> None:
+            self.ai_verification_runs = Collection()
+            self.verification_sessions = Collection()
+
+    repository = MongoRepository.__new__(MongoRepository)
+    repository._db = Database()  # type: ignore[attr-defined]
+
+    modified = asyncio.run(repository.mark_stale_active_verification_runs())
+
+    assert modified == 2
+    run_query, run_update = repository._db.ai_verification_runs.calls[0]  # type: ignore[attr-defined]
+    assert run_query["status"]["$in"] == ["queued", "running"]
+    assert run_update["$set"]["status"] == "failed"
+    session_query, session_update = repository._db.verification_sessions.calls[0]  # type: ignore[attr-defined]
+    assert session_query == {"status": "ai_review"}
+    assert session_update["$set"]["status"] == "in_progress"
+    assert session_update["$set"]["ai_run_id"] is None
+
+
+def test_replace_job_records_upserts_before_deleting_stale_rows() -> None:
+    class Collection:
+        def __init__(self) -> None:
+            self.order: list[str] = []
+            self.bulk_ops: list[object] = []
+            self.delete_query: dict | None = None
+
+        async def find(self, *_: object, **__: object):  # noqa: ANN003
+            raise AssertionError("preserve_reviews was not requested")
+
+        async def bulk_write(self, ops, ordered=False):  # noqa: ANN001
+            del ordered
+            self.order.append("bulk_write")
+            self.bulk_ops = list(ops)
+
+        async def delete_many(self, query):  # noqa: ANN001
+            self.order.append("delete_many")
+            self.delete_query = query
+
+    class Database:
+        def __init__(self) -> None:
+            self.extraction_records = Collection()
+
+    repository = MongoRepository.__new__(MongoRepository)
+    repository._db = Database()  # type: ignore[attr-defined]
+
+    asyncio.run(
+        repository.replace_job_records(
+            "job_1",
+            [
+                {
+                    "id": "rec_1",
+                    "fields": {},
+                    "text_evidence": [{"page": 1, "quote": "灰陶罐"}],
+                    "source_pages": [1],
+                }
+            ],
+        )
+    )
+
+    collection = repository._db.extraction_records  # type: ignore[attr-defined]
+    assert collection.order == ["bulk_write", "delete_many"]
+    operation = collection.bulk_ops[0]
+    assert operation._filter == {"_id": "rec_1"}  # type: ignore[attr-defined]
+    assert operation._doc["text_evidence"][0]["quote"] == "灰陶罐"  # type: ignore[attr-defined]
+    assert collection.delete_query == {"job_id": "job_1", "_id": {"$nin": ["rec_1"]}}
 
 
 def test_update_job_sets_completed_at_only_on_terminal_status() -> None:

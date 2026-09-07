@@ -1,5 +1,6 @@
 import { get, patch, post, put } from '@/api/http'
 import { constraintTypeMap, fieldTypeMap } from '@/domain/extraction-config'
+import { pdfUploadTimeoutMs } from '@/domain/pdf-import'
 import type {
   ExtractionConfigPayload,
   ExtractionFieldType,
@@ -107,12 +108,17 @@ function createIdempotencyKey() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
 }
 
-export function uploadPdfDocument(file: File): Promise<UploadedDocument> {
+export function uploadPdfDocument(
+  file: File,
+  options?: { onUploadProgress?: (loaded: number, total: number) => void },
+): Promise<UploadedDocument> {
   const form = new FormData()
   form.append('file', file)
   return post<UploadedDocument>('/v1/documents', form, {
-    timeout: 120_000,
-    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: pdfUploadTimeoutMs(file.size),
+    onUploadProgress: (event) => {
+      options?.onUploadProgress?.(event.loaded, event.total ?? file.size)
+    },
   })
 }
 
@@ -146,7 +152,7 @@ export function renderDocumentPage(documentId: string, pageNo: number): Promise<
 }
 
 export function getDocumentImages(documentId: string): Promise<DocumentImage[]> {
-  return get<DocumentImage[]>(`/v1/documents/${documentId}/images`)
+  return get<DocumentImage[]>(`/v1/documents/${documentId}/images`, { timeout: 60_000 })
 }
 
 export function getUploadedDocument(documentId: string): Promise<UploadedDocument> {
@@ -188,8 +194,17 @@ export function getExtractionJob(
   return get<ExtractionJob>(`/v1/extraction-jobs/${jobId}`, options)
 }
 
-export function getLatestCompletedExtractionJob(): Promise<ExtractionJob | null> {
-  return get<ExtractionJob | null>('/v1/extraction-jobs/recent/latest')
+export function getLatestCompletedExtractionJob(
+  documentId?: string,
+  options?: { includeActive?: boolean },
+): Promise<ExtractionJob | null> {
+  const params = new URLSearchParams()
+  if (documentId) params.set('document_id', documentId)
+  if (options?.includeActive) params.set('include_active', 'true')
+  const query = params.toString()
+  return get<ExtractionJob | null>(
+    `/v1/extraction-jobs/recent/latest${query ? `?${query}` : ''}`,
+  )
 }
 
 export function cancelExtractionJob(jobId: string): Promise<ExtractionJob> {
@@ -231,6 +246,7 @@ export async function getExtractionRecords(jobId: string): Promise<ExtractionRec
   do {
     const result = await get<ExtractionRecordPage>(
       `/v1/extraction-jobs/${jobId}/records?page=${page}&page_size=200&compact=true`,
+      { timeout: 60_000 },
     )
     records.push(...result.items)
     total = result.total
@@ -330,16 +346,31 @@ export function createVerificationSession(
   jobId: string,
   rules: VerificationRule[],
   sampleSize = 18,
+  options?: { suppressErrorMessage?: boolean },
 ): Promise<VerificationSession> {
-  return post<VerificationSession>(`/v1/extraction-jobs/${jobId}/verification-sessions`, {
-    rules: rules.map(({ id, title, description, enabled }) => ({
-      id,
-      title,
-      description,
-      enabled,
-    })),
-    sample_size: sampleSize,
-  })
+  return post<VerificationSession>(
+    `/v1/extraction-jobs/${jobId}/verification-sessions`,
+    {
+      rules: rules.map(({ id, title, description, enabled }) => ({
+        id,
+        title,
+        description,
+        enabled,
+      })),
+      sample_size: sampleSize,
+    },
+    { timeout: 60_000, ...options },
+  )
+}
+
+export function getActiveVerificationSession(
+  jobId: string,
+  options?: { suppressErrorMessage?: boolean },
+): Promise<VerificationSession> {
+  return get<VerificationSession>(
+    `/v1/extraction-jobs/${jobId}/verification-sessions/active`,
+    options,
+  )
 }
 
 export function getVerificationSession(

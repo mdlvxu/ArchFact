@@ -21,19 +21,23 @@ class GridFsStorage:
         )
 
     async def upload_pdf(self, file: UploadFile) -> tuple[str, str, int]:
+        sha256, size = await self.digest_pdf(file)
+        file_id = await self.store_pdf(file, sha256=sha256)
+        return file_id, sha256, size
+
+    async def digest_pdf(self, file: UploadFile) -> tuple[str, int]:
+        return await asyncio.to_thread(self._digest_pdf_sync, file.file)
+
+    async def store_pdf(self, file: UploadFile, *, sha256: str) -> str:
         return await asyncio.to_thread(
-            self._upload_pdf_sync,
+            self._store_pdf_sync,
             file.file,
             file.filename or "document.pdf",
             file.content_type or "application/pdf",
+            sha256,
         )
 
-    def _upload_pdf_sync(
-        self,
-        source: BinaryIO,
-        filename: str,
-        content_type: str,
-    ) -> tuple[str, str, int]:
+    def _digest_pdf_sync(self, source: BinaryIO) -> tuple[str, int]:
         digest = hashlib.sha256()
         size = 0
         source.seek(0)
@@ -51,14 +55,23 @@ class GridFsStorage:
         header = source.read(5)
         if header != b"%PDF-":
             raise DomainError("上传内容不是有效的 PDF 文件", code=4150, status_code=415)
+        source.seek(0)
+        return digest.hexdigest(), size
 
+    def _store_pdf_sync(
+        self,
+        source: BinaryIO,
+        filename: str,
+        content_type: str,
+        sha256: str,
+    ) -> str:
         source.seek(0)
         file_id = self._bucket.upload_from_stream(
             filename,
             source,
-            metadata={"content_type": content_type, "sha256": digest.hexdigest()},
+            metadata={"content_type": content_type, "sha256": sha256},
         )
-        return str(file_id), digest.hexdigest(), size
+        return str(file_id)
 
     async def download_to_path(self, file_id: str, target: Path) -> None:
         await asyncio.to_thread(self._download_to_path_sync, file_id, target)

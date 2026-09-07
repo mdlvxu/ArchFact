@@ -6,6 +6,7 @@ import {
   cancelRematch,
   createRematch,
   createVerificationSession,
+  getActiveVerificationSession,
   getRematch,
   getRematchChanges,
   getVerificationVersions,
@@ -262,8 +263,8 @@ const versions = computed<VerificationVersion[]>(() =>
     return {
       version: version.version,
       createdAt: formatTimestamp(version.created_at),
-      title: version.version === 1 ? 'Initial version' : 'Assertion execution',
-      summary: `${enabledCount} active assertions · ${version.report.sample_count} fixed samples · ${version.matching_version_id ?? 'M0'}`,
+            title: version.version === 1 ? 'Initial version' : 'Assertion execution',
+            summary: `${enabledCount} active assertions · ${version.report.sample_count} samples (9 correct / 9 incorrect) · ${version.matching_version_id ?? 'M0'}`,
       matchingVersionId: version.matching_version_id ?? 'M0',
       staleCount: version.report.stale_count ?? 0,
       relationChangedCount: version.report.relation_changed_count ?? 0,
@@ -308,7 +309,7 @@ async function loadVersions() {
   }
 }
 
-/** 创建真实校验会话；第一版固定随机18条，后续版本复用同一组样本。 */
+/** 按规则抽 9 对 9 错，跳到预览页做人工 PASS/FAIL；AI 复核要等全部标完后再点完成核验。 */
 async function executeVerification() {
   if (running.value) return
   if (!props.jobId) {
@@ -323,7 +324,25 @@ async function executeVerification() {
 
   running.value = true
   try {
-    const session = await createVerificationSession(props.jobId, rules.value, 18)
+    let session: VerificationSession
+    try {
+      session = await createVerificationSession(props.jobId, rules.value, 18, {
+        suppressErrorMessage: true,
+      })
+    } catch (error) {
+      try {
+        session = await getActiveVerificationSession(props.jobId, {
+          suppressErrorMessage: true,
+        })
+      } catch {
+        throw error
+      }
+    }
+    if (session.status === 'completed') {
+      await loadVersions()
+      ElMessage.success(t('verification.completed', { version: session.target_version }))
+      return
+    }
     emit('startVerification', session)
     ElMessage.success(t('verification.sessionCreated', {
       version: session.target_version,

@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from app.models.schemas import ExtractionConfig
-from app.services.page_semantics import PageSemantics
+from app.domain.page_semantics import PageSemantics
 from app.services.relation_matcher import RelationMatcher
 from app.services.visual_reference import sequence_text_score
 
@@ -27,7 +27,7 @@ class FusionOutput:
 class ResultFusionService:
     provider = "archfact"
     model = "spatial-evidence-fusion"
-    version = "22"
+    version = "24"
     page_window = 3
     link_hint_min_score = 0.62
     _artifact_line_pattern = re.compile(
@@ -417,6 +417,234 @@ class ResultFusionService:
                 continue
             if region.get("approximate") and not region.get("crop_object_key"):
                 record["thumbnail_region_id"] = None
+
+    _line_drawing_kinds = frozenset({"line_drawing", "artifact", "grave_drawing"})
+    _line_drawing_relation_types = frozenset(
+        {"drawing_of", "number_of", "caption_of", "nearest_visual_fusion"}
+    )
+
+    @classmethod
+    def discard_unbound_sparse_catalog_records(
+        cls,
+        *,
+        records: list[dict[str, Any]],
+        regions: list[dict[str, Any]],
+        relations: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Drop catalog cards whose preview is one PDF page with no drawing."""
+
+        region_by_id = {
+            str(region.get("id") or region.get("_id")): region
+            for region in regions
+            if region.get("id") or region.get("_id")
+        }
+        relation_by_id = {
+            str(relation.get("id") or relation.get("_id")): relation
+            for relation in relations
+            if relation.get("id") or relation.get("_id")
+        }
+        return cls._drop_sparse_records_without_line_drawings(
+            records=records,
+            region_by_id=region_by_id,
+            relation_by_id=relation_by_id,
+        )
+
+    @classmethod
+    def _drop_sparse_records_without_line_drawings(
+        cls,
+        *,
+        records: list[dict[str, Any]],
+        region_by_id: dict[str, dict[str, Any]],
+        relation_by_id: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Treat single-page, sparsely filled cards with no drawing as errors.
+
+        Preview that only shows one PDF page, plus a catalog card with a few
+        leftover table cells and no 器物线图 / artifact crop, is not a valid
+        extraction. Rich body-text catalogs and records already bound to a
+        drawing are kept.
+        """
+
+        kept: list[dict[str, Any]] = []
+        dropped: list[dict[str, Any]] = []
+        for record in records:
+            if cls._is_sparse_single_page_without_line_drawing(
+                record=record,
+                region_by_id=region_by_id,
+                relation_by_id=relation_by_id,
+            ):
+                dropped.append(record)
+                continue
+            kept.append(record)
+        if not dropped:
+            return records
+        kept_by_artifact_id: dict[str, list[dict[str, Any]]] = {}
+        kept_by_entity: dict[str, list[dict[str, Any]]] = {}
+        for record in kept:
+            artifact_id = cls._record_artifact_id_value(record)
+            if artifact_id:
+                kept_by_artifact_id.setdefault(artifact_id, []).append(record)
+            entity_id = str(record.get("entity_id") or "")
+            if entity_id:
+                kept_by_entity.setdefault(entity_id, []).append(record)
+        for stub in dropped:
+            targets: list[dict[str, Any]] = []
+            entity_id = str(stub.get("entity_id") or "")
+            if entity_id:
+                targets.extend(kept_by_entity.get(entity_id, []))
+            artifact_id = cls._record_artifact_id_value(stub)
+            if artifact_id:
+                targets.extend(kept_by_artifact_id.get(artifact_id, []))
+            seen_ids: set[int] = set()
+            for target in targets:
+                target_key = id(target)
+                if target_key in seen_ids:
+                    continue
+                seen_ids.add(target_key)
+                cls._copy_missing_identity_fields(stub, target)
+        return kept
+
+    @classmethod
+    def _is_sparse_single_page_without_line_drawing(
+        cls,
+        *,
+        record: dict[str, Any],
+        region_by_id: dict[str, dict[str, Any]],
+        relation_by_id: dict[str, dict[str, Any]],
+    ) -> bool:
+        if cls._has_artifact_line_drawing(
+            record=record,
+            region_by_id=region_by_id,
+            relation_by_id=relation_by_id,
+        ):
+            return False
+        if len(cls._record_preview_pages(record, region_by_id)) > 1:
+            return False
+        return cls._is_incomplete_catalog_card(record)
+
+    @classmethod
+    def _has_artifact_line_drawing(
+        cls,
+        *,
+        record: dict[str, Any],
+        region_by_id: dict[str, dict[str, Any]],
+        relation_by_id: dict[str, dict[str, Any]],
+    ) -> bool:
+        region_ids = {
+            str(region_id)
+            for region_id in (
+                *(record.get("region_ids", []) or []),
+                record.get("primary_artifact_region_id"),
+                record.get("thumbnail_region_id"),
+            )
+            if region_id
+        }
+        for region_id in region_ids:
+            region = region_by_id.get(region_id)
+            if region is None:
+                continue
+            if region.get("kind") not in cls._line_drawing_kinds:
+                continue
+            if region.get("approximate") and not region.get("crop_object_key"):
+                continue
+            return True
+        for relation_id in record.get("relation_ids", []) or []:
+            relation = relation_by_id.get(str(relation_id))
+            if relation is None:
+                continue
+            relation_type = str(relation.get("relation_type") or "")
+            if relation_type not in cls._line_drawing_relation_types and relation_type != (
+                "evidence_for"
+            ):
+                continue
+            for endpoint in (
+                relation.get("source_region_id"),
+                relation.get("target_region_id"),
+            ):
+                region = region_by_id.get(str(endpoint or ""))
+                if region is None:
+                    continue
+                if region.get("kind") in cls._line_drawing_kinds:
+                    return True
+        return False
+
+    @classmethod
+    def _record_preview_pages(
+        cls,
+        record: dict[str, Any],
+        region_by_id: dict[str, dict[str, Any]],
+    ) -> set[int]:
+        pages: set[int] = set()
+        for key in ("source_pages", "associated_pages"):
+            for page in record.get(key, []) or []:
+                if isinstance(page, int):
+                    pages.add(page)
+        for region_id in record.get("region_ids", []) or []:
+            page = region_by_id.get(str(region_id), {}).get("page")
+            if isinstance(page, int):
+                pages.add(page)
+        return pages
+
+    @classmethod
+    def _is_incomplete_catalog_card(cls, record: dict[str, Any]) -> bool:
+        fields = record.get("fields", {})
+        if not isinstance(fields, dict):
+            return True
+        page_text = fields.get("page_text")
+        if isinstance(page_text, dict) and cls._field_has_value(page_text):
+            text = str(page_text.get("value") or page_text.get("raw_value") or "").strip()
+            if len(text) >= 8:
+                return False
+        populated_body = [
+            key
+            for key in cls._body_field_keys
+            if isinstance(fields.get(key), dict) and cls._field_has_value(fields[key])
+        ]
+        measurements = fields.get("measurements")
+        has_measurements = isinstance(measurements, dict) and cls._field_has_value(
+            measurements
+        )
+        if not populated_body:
+            return True
+        has_morphology = "morphological_description" in populated_body
+        # Body-text catalogs often have description + size without color/texture.
+        if has_morphology and has_measurements:
+            return False
+        return len(populated_body) < 3 or not has_measurements
+
+    @classmethod
+    def _record_artifact_id_value(cls, record: dict[str, Any]) -> str:
+        fields = record.get("fields", {})
+        field = fields.get("artifact_id") if isinstance(fields, dict) else None
+        if not isinstance(field, dict) or not cls._field_has_value(field):
+            return ""
+        return cls._normalize_artifact_identifier(field.get("value")) or str(
+            field.get("value") or ""
+        ).strip()
+
+    @classmethod
+    def _copy_missing_identity_fields(
+        cls,
+        source: dict[str, Any],
+        target: dict[str, Any],
+    ) -> None:
+        source_fields = source.get("fields") if isinstance(source.get("fields"), dict) else {}
+        target_fields = target.get("fields") if isinstance(target.get("fields"), dict) else {}
+        if not isinstance(source_fields, dict) or not isinstance(target_fields, dict):
+            return
+        changed = False
+        for key in ("artifact_id", "figure_caption", "category"):
+            source_field = source_fields.get(key)
+            target_field = target_fields.get(key)
+            if not isinstance(source_field, dict) or not cls._field_has_value(source_field):
+                continue
+            if isinstance(target_field, dict) and cls._field_has_value(target_field):
+                continue
+            target_fields[key] = copy.deepcopy(source_field)
+            changed = True
+        if changed:
+            target["fields"] = target_fields
+
 
     @classmethod
     def _normalize_artifact_identifiers(
@@ -2895,7 +3123,11 @@ class ResultFusionService:
             if region.get("kind") in visual_kinds and region.get("crop_object_key")
         ]
         entries: list[dict[str, Any]] = []
+        figure_pages_by_record: dict[int, set[int]] = {}
         for record_index, record in enumerate(records):
+            figure_pages_by_record[record_index] = self._figure_pages_for_record(
+                record, regions
+            )
             if not self._is_meaningful_record(record):
                 continue
             if any(
@@ -2942,21 +3174,27 @@ class ResultFusionService:
                     row.append(0.0)
                     continue
                 page_distance = abs(int(candidate.get("page", entry["page"])) - entry["page"])
-                if page_distance > self.page_window:
+                figure_pages = figure_pages_by_record.get(entry["record_index"], set())
+                on_figure_page = int(candidate.get("page", -1)) in figure_pages
+                if page_distance > self.page_window and not on_figure_page:
                     row.append(0.0)
                     continue
                 visual_center = self._center(candidate["bbox"])
                 distance_score = max(0.0, 1.0 - math.dist(entry_center, visual_center) / 1.1)
                 page_score = max(0.0, 1.0 - page_distance / (self.page_window + 1))
+                if on_figure_page:
+                    page_score = max(page_score, 0.82)
                 above_caption_bonus = (
                     0.12 if page_distance == 0 and candidate["bbox"][3] <= entry["bbox"][1] else 0.0
                 )
                 identifier_bonus = 0.2 if identifier_compatibility is True else 0.0
+                drawing_bonus = 0.1 if candidate.get("kind") == "line_drawing" else 0.0
                 score = (
                     0.78 * distance_score
                     + 0.22 * page_score
                     + above_caption_bonus
                     + identifier_bonus
+                    + drawing_bonus
                 )
                 row.append(min(1.0, score))
             scores.append(row)
@@ -3039,6 +3277,28 @@ class ResultFusionService:
         if linkage_evidence:
             return linkage_evidence[0]
         return None
+
+    def _figure_pages_for_record(
+        self,
+        record: dict[str, Any],
+        regions: list[dict[str, Any]],
+    ) -> set[int]:
+        figure_hints = [hint for key, hint in self._record_hints(record) if key == "figure_refs"]
+        if not figure_hints:
+            return set()
+        pages: set[int] = set()
+        for region in regions:
+            if region.get("kind") != "caption" or not isinstance(region.get("page"), int):
+                continue
+            text = self._region_text(region)
+            if not text:
+                continue
+            if any(
+                self._hint_text_score("figure_refs", hint, text) >= 0.94
+                for hint in figure_hints
+            ):
+                pages.add(int(region["page"]))
+        return pages
 
     def _fuse_link_hints(
         self,

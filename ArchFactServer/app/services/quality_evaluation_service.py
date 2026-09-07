@@ -9,9 +9,10 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from app.core.errors import ConflictError, DomainError
+from app.domain.identifiers import normalize_identifier
+from app.domain.time import utc_now
 from app.infrastructure.task_dispatcher import LocalJobDispatcher
 from app.repositories.mongo_repository import MongoRepository
-from app.services.gold_dataset_service import normalize_identifier
 
 FIELD_LABELS = {
     "artifact_id": "器物编号",
@@ -31,10 +32,6 @@ FIELD_LABELS = {
 
 REGION_KINDS = ("artifact", "number", "caption", "grave_drawing", "group")
 OCR_ANCHOR_FIELDS = ("artifact_id", "measurements", "figure_caption")
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 def extracted_field_value(record: dict[str, Any], key: str) -> Any:

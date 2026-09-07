@@ -19,12 +19,11 @@ def test_measurement_normalization_handles_equivalent_units() -> None:
     assert compact_text("口径 6.4 厘米") == compact_text("口径6.4 cm")
 
 
-def test_human_and_ai_consensus_is_computed_after_ai_review() -> None:
+def test_human_and_ai_consensus_is_human_authoritative() -> None:
     assert (
         VerificationService._consensus(
             human_verdict="passed",
             ai_verdict="passed",
-            gold_match_status="matched",
         )
         == "agreed"
     )
@@ -32,7 +31,13 @@ def test_human_and_ai_consensus_is_computed_after_ai_review() -> None:
         VerificationService._consensus(
             human_verdict="passed",
             ai_verdict="failed",
-            gold_match_status="matched",
+        )
+        == "conflict"
+    )
+    assert (
+        VerificationService._consensus(
+            human_verdict="failed",
+            ai_verdict="uncertain",
         )
         == "conflict"
     )
