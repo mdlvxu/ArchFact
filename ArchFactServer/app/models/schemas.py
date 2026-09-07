@@ -591,6 +591,7 @@ class VerificationItemView(BaseModel):
     relation_signature: str = ""
     relation_changed: bool = False
     sampling_strata: list[str] = Field(default_factory=list)
+    expected_label: Literal["correct", "incorrect"] | None = None
     stale: bool = False
     reviewed_at: datetime | None = None
     ai_verdict: Literal["passed", "failed", "uncertain"] | None = None
@@ -605,6 +606,7 @@ class VerificationItemView(BaseModel):
         "conflict",
         "human_resolved",
         "benchmark_unavailable",
+        "machine_verified",
     ] = "pending"
     conflict_resolved: bool = False
 

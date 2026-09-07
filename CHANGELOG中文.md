@@ -2,6 +2,45 @@
 
 [English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
 
+## quality-baseline-v4 — 2026-09-07
+
+相对 `quality-baseline-v3`（2026-08-13）的主要修改与优化。
+
+### 大报告导入与任务续跑
+
+- 默认上传上限 512 MB；Vite 代理和前端超时随文件大小拉长
+- 页面导航展示上传 / 保存 / 解析进度，避免 `arrayBuffer()` 卡住界面
+- 上传不再手写无 boundary 的 `Content-Type`；PDF.js 的 blob URL 在文档释放前保持有效
+- FastAPI 启动时恢复中断的抽取任务，并跳过已经完成的页面
+- 进程重启后，将僵死的重匹配、AI 复核和质量评估标记为失败
+
+### 硬件自适应与 MongoDB
+
+- 默认 `HARDWARE_AUTO_TUNE=true`，按本机 CPU/内存/GPU 设置 OCR 进程数、发现并发和分页批大小
+- `documents.sha256` 唯一，相同 PDF 不再二次写入 GridFS
+- 补充复合索引；`job_events` 60 天 TTL，语义缓存 90 天 TTL
+- 每个任务仅允许一个进行中的核验会话（部分唯一索引）
+
+### 刷新后接上正在跑的任务
+
+- `GET /extraction-jobs/recent/latest?include_active=true` 优先返回排队 / 抽取中的任务
+- 刷新数据提取页时，不再被 `localStorage` 里上一本已完成报告盖住当前任务
+- 页面导航列表占满剩余高度，最后一页缩略图和页码不再被裁切
+
+### 后端结构
+
+- 领域辅助放到 `app/domain/`，视图与字段补全放到 `app/application/`
+- 抽取路由按 jobs / records / rematches / verification 拆分，URL 前缀仍是 `/extraction-jobs`
+- `MongoRepository` 改为 mixin 门面；`result_fusion` 仍为单文件，版本升至 v24
+
+### 测试
+
+- 前端：`pnpm test:run` 83 通过、1 跳过
+- 后端：`pytest` 190 通过
+- 新增：PDF 导入进度、硬件自适应、Mongo 索引、机器核验等用例
+
+---
+
 ## quality-baseline-v3 — 2026-08-13
 
 相对 `quality-baseline-v2`（2026-08-12）的主要修改与优化。

@@ -33,3 +33,35 @@ def test_build_record_view_prefers_updated_at_fallback() -> None:
     )
 
     assert view.created_at == stamp
+
+
+def test_build_record_view_keeps_text_evidence_in_compact_mode() -> None:
+    view = build_record_view(
+        {
+            "_id": "rec_evidence",
+            "job_id": "job-1",
+            "source_pages": [12],
+            "fields": {},
+            "region_ids": ["reg_1"],
+            "text_evidence": [
+                {
+                    "page": 12,
+                    "quote": "泥质灰陶罐",
+                    "bbox": [0.1, 0.2, 0.3, 0.4],
+                    "region_id": "reg_1",
+                    "kind": "text",
+                    "crop_object_key": "omit-me",
+                }
+            ],
+            "linkage": {
+                "identity": {"artifact_id": "M1:1"},
+                "visual_link": {"evidence": [{"page": 12}], "evidence_block_ids": ["b1"]},
+            },
+        },
+        compact=True,
+    )
+
+    assert view.region_ids == ["reg_1"]
+    assert view.text_evidence[0].quote == "泥质灰陶罐"
+    assert view.text_evidence[0].region_id == "reg_1"
+    assert view.linkage.visual_link.evidence == []

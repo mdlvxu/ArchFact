@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { formatByteSize, type PdfImportProgress } from '@/domain/pdf-import'
 import { useI18n } from '@/i18n'
 import type { PdfPageItem } from '@/types/pdf'
 
@@ -9,9 +10,12 @@ interface Props {
   activePage: number
   total: number
   fileName: string
+  importProgress?: PdfImportProgress | null
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  importProgress: null,
+})
 const { t } = useI18n()
 
 const emit = defineEmits<{
@@ -22,10 +26,20 @@ const emit = defineEmits<{
 const pageListRef = ref<HTMLElement>()
 let thumbnailObserver: IntersectionObserver | undefined
 
+const importing = computed(() => Boolean(props.importProgress?.active))
+const stageLabel = computed(() => {
+  const stage = props.importProgress?.stage
+  if (stage === 'saving') return t('navigator.saving')
+  if (stage === 'parsing') return t('navigator.parsing')
+  return t('navigator.uploading')
+})
+
 /** 仅为进入可视区域的页码请求缩略图，避免大型 PDF 一次性占用过多内存 */
 async function observeVisiblePages() {
   await nextTick()
   thumbnailObserver?.disconnect()
+  if (!props.pages.length || !pageListRef.value) return
+  if (typeof globalThis.IntersectionObserver !== 'function') return
 
   thumbnailObserver = new globalThis.IntersectionObserver(
     (entries) => {
@@ -50,7 +64,13 @@ async function observeVisiblePages() {
     .forEach((element) => thumbnailObserver?.observe(element))
 }
 
-watch(() => props.pages.length, observeVisiblePages, { immediate: true })
+watch(
+  () => [props.pages.length, importing.value] as const,
+  ([pageCount, isImporting]) => {
+    if (!isImporting && pageCount > 0) void observeVisiblePages()
+  },
+  { immediate: true },
+)
 
 onBeforeUnmount(() => thumbnailObserver?.disconnect())
 </script>
@@ -70,7 +90,46 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
     </p>
 
     <div
-      v-if="pages.length"
+      v-if="importing && importProgress"
+      class="import-progress"
+      role="status"
+      :aria-label="t('navigator.importing')"
+    >
+      <p class="import-progress__stage">{{ stageLabel }}</p>
+      <p class="import-progress__meta">
+        {{ formatByteSize(importProgress.fileSize) }}
+      </p>
+
+      <div class="import-meter">
+        <div class="import-meter__row">
+          <span>{{ t('navigator.uploadPercent', { percent: importProgress.uploadPercent }) }}</span>
+        </div>
+        <div
+          class="import-meter__track"
+          :class="{ 'import-meter__track--busy': importProgress.stage === 'saving' }"
+        >
+          <span
+            class="import-meter__fill"
+            :style="{ width: `${importProgress.uploadPercent}%` }"
+          />
+        </div>
+      </div>
+
+      <div class="import-meter">
+        <div class="import-meter__row">
+          <span>{{ t('navigator.parsePercent', { percent: importProgress.parsePercent }) }}</span>
+        </div>
+        <div class="import-meter__track">
+          <span
+            class="import-meter__fill"
+            :style="{ width: `${importProgress.parsePercent}%` }"
+          />
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-else-if="pages.length"
       ref="pageListRef"
       class="page-list"
     >
@@ -114,7 +173,11 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
 
 <style scoped lang="scss">
 .page-navigator {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   min-width: 0;
+  min-height: 0;
   padding: 14px 11px 12px;
   overflow: hidden;
   background: rgb(255 255 255 / 82%);
@@ -124,6 +187,7 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
 }
 
 .panel-title {
+  flex-shrink: 0;
   margin-bottom: 8px;
   font-size: var(--af-font-panel-title);
   font-weight: 500;
@@ -131,6 +195,7 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
 }
 
 .file-name {
+  flex-shrink: 0;
   margin-bottom: 9px;
   overflow: hidden;
   font-size: var(--af-font-caption);
@@ -139,14 +204,93 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
   white-space: nowrap;
 }
 
+.import-progress {
+  display: grid;
+  flex: 1;
+  gap: 12px;
+  min-height: 0;
+  padding: 8px 2px 4px;
+}
+
+.import-progress__stage {
+  font-size: var(--af-font-body);
+  font-weight: 600;
+  color: var(--af-heading);
+}
+
+.import-progress__meta {
+  font-size: var(--af-font-caption);
+  color: var(--af-muted);
+}
+
+.import-meter {
+  display: grid;
+  gap: 6px;
+}
+
+.import-meter__row {
+  font-size: var(--af-font-caption);
+  color: #6f675f;
+}
+
+.import-meter__track {
+  height: 8px;
+  overflow: hidden;
+  background: #efe8e0;
+  border: 1px solid #e0d6cb;
+  border-radius: 999px;
+}
+
+.import-meter__fill {
+  display: block;
+  height: 100%;
+  background: #b26a29;
+  border-radius: 999px;
+  transition: width 0.2s ease-out;
+}
+
+.import-meter__track--busy .import-meter__fill {
+  animation: import-busy 1.2s linear infinite;
+}
+
+@keyframes import-busy {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
 .page-list {
   display: grid;
+  flex: 1;
   gap: 10px;
-  max-height: calc(100vh - 168px);
-  padding: 2px 2px 4px;
+  min-height: 0;
+  padding: 2px 2px 20px;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: #d6cabd transparent;
+}
+
+.page-list::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+
+.page-list::-webkit-scrollbar-thumb {
+  background: #d6cabd;
+  border-radius: 999px;
+}
+
+.page-item:last-child {
+  margin-bottom: 4px;
 }
 
 .page-item {
@@ -211,6 +355,7 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
 
 .empty-pages {
   display: grid;
+  flex: 1;
   place-items: center;
   min-height: 200px;
   color: #9b938a;

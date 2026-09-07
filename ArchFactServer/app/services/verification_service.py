@@ -11,13 +11,15 @@ import httpx
 
 from app.core.config import Settings
 from app.core.errors import ConflictError, DomainError
+from app.domain.identifiers import normalize_identifier
+from app.domain.time import utc_now
+from app.domain.verification_sampling import (
+    enabled_rule_payload,
+    evaluate_record_rules,
+    rule_scopes_from_rules,
+)
 from app.infrastructure.task_dispatcher import LocalJobDispatcher
 from app.repositories.mongo_repository import MongoRepository
-from app.services.gold_dataset_service import normalize_identifier
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 def field_value(record: dict[str, Any], key: str) -> Any:
@@ -54,7 +56,7 @@ def parse_json_object(content: str) -> dict[str, Any]:
 
 
 class VerificationService:
-    """Coordinates human-first, benchmark-isolated, asynchronous AI verification."""
+    """Human-first verification: 9/9 sample, then DeepSeek comparison only."""
 
     def __init__(
         self,
@@ -101,8 +103,6 @@ class VerificationService:
             return session, version, run
 
         if session.get("status") == "conflict_review":
-            # Legacy sessions may still be stuck in conflict_review. Freeze using the
-            # existing human verdicts instead of requiring another pass on page 2.
             completed, version = await self._repository.finalize_verification_session(
                 job_id=job_id,
                 session_id=session_id,
@@ -128,16 +128,13 @@ class VerificationService:
         if unreviewed:
             raise ConflictError(f"还有 {len(unreviewed)} 条样本尚未完成人工核验")
 
-        job = await self._repository.get_job(job_id)
-        dataset = await self._repository.get_gold_dataset_for_document(
-            document_id=job["document_id"]
-        )
-        if dataset is not None and not self._settings.llm_api_key:
-            raise DomainError("已绑定人工标注数据，但尚未配置 LLM_API_KEY，无法启动 AI 复核")
+        if not self._settings.llm_api_key:
+            raise DomainError("尚未配置 LLM_API_KEY，无法启动 DeepSeek 人机对照")
+
         updated, run = await self._repository.create_ai_verification_run(
             job_id=job_id,
             session_id=session_id,
-            gold_dataset_id=dataset["_id"] if dataset else None,
+            gold_dataset_id=None,
             total=len(session.get("items", [])),
         )
         await self._dispatcher.dispatch(run["_id"])
@@ -166,9 +163,8 @@ class VerificationService:
             }
             relations = await self._repository.list_job_relations(run["job_id"])
             relation_by_id = {str(relation["_id"]): relation for relation in relations}
-            dataset = None
-            if run.get("gold_dataset_id"):
-                dataset = await self._repository.get_gold_dataset(run["gold_dataset_id"])
+            rules = [rule for rule in session.get("rules", []) if rule.get("enabled", True)]
+            artifact_id_counts = self._artifact_id_counts(records)
 
             async def judge_item(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                 record_id = str(item["record_id"])
@@ -178,7 +174,9 @@ class VerificationService:
                 try:
                     return record_id, await self._judge_record(
                         record=record,
-                        dataset=dataset,
+                        rules=rules,
+                        expected_label=item.get("expected_label"),
+                        artifact_id_counts=artifact_id_counts,
                         visual_context=self._visual_context(
                             record,
                             region_kind_by_id=region_kind_by_id,
@@ -189,27 +187,25 @@ class VerificationService:
                     return record_id, {
                         "ai_verdict": "uncertain",
                         "ai_confidence": 0.0,
-                        "ai_reason": f"单条 AI 复核失败：{str(exc)[:300]}",
+                        "ai_reason": f"单条机器校验失败：{str(exc)[:300]}",
                         "ai_field_results": [],
                         "gold_record_id": None,
-                        "gold_match_status": "matched" if dataset else "unavailable",
+                        "gold_match_status": None,
                         "conflict_resolved": False,
                     }
 
             tasks = [asyncio.create_task(judge_item(item)) for item in session.get("items", [])]
             results: dict[str, dict[str, Any]] = {}
             total = len(tasks)
+            item_by_id = {
+                str(item.get("record_id")): item for item in session.get("items", [])
+            }
             for current, task in enumerate(asyncio.as_completed(tasks), start=1):
                 record_id, result = await task
-                human_verdict = next(
-                    item.get("verdict")
-                    for item in session.get("items", [])
-                    if str(item.get("record_id")) == record_id
-                )
+                human_verdict = item_by_id.get(record_id, {}).get("verdict")
                 result["consensus_status"] = self._consensus(
                     human_verdict=human_verdict,
                     ai_verdict=result.get("ai_verdict"),
-                    gold_match_status=result.get("gold_match_status"),
                 )
                 results[record_id] = result
                 await self._repository.update_ai_verification_run(
@@ -221,7 +217,7 @@ class VerificationService:
                     },
                 )
 
-            updated_session = await self._repository.apply_ai_verification_results(
+            await self._repository.apply_ai_verification_results(
                 job_id=run["job_id"],
                 session_id=run["session_id"],
                 run_id=run_id,
@@ -233,9 +229,7 @@ class VerificationService:
             uncertain_count = sum(
                 result.get("ai_verdict") == "uncertain" for result in results.values()
             )
-            # Always freeze a version after AI review. Human PASS/FAIL remains authoritative;
-            # conflicts are retained in the version report instead of blocking navigation.
-            updated_session, version = await self._repository.finalize_verification_session(
+            _updated_session, version = await self._repository.finalize_verification_session(
                 job_id=run["job_id"],
                 session_id=run["session_id"],
             )
@@ -268,28 +262,11 @@ class VerificationService:
         self,
         *,
         record: dict[str, Any],
-        dataset: dict[str, Any] | None,
+        rules: list[dict[str, Any]],
+        expected_label: str | None,
+        artifact_id_counts: dict[str, int],
         visual_context: dict[str, Any],
     ) -> dict[str, Any]:
-        if dataset is None:
-            return self._unavailable_result("当前 PDF 未绑定专属人工标注数据，保留人工结论")
-        artifact_id = self._record_artifact_id(record)
-        if not artifact_id:
-            return self._ambiguous_result("自动结果缺少可匹配的器物编号")
-        matches = await self._repository.find_gold_records_by_artifact_id(
-            dataset_id=dataset["_id"],
-            canonical_artifact_id=artifact_id,
-        )
-        if not matches:
-            return self._ambiguous_result(f"人工标注数据中未找到器物编号 {artifact_id}")
-        if len(matches) > 1:
-            return self._ambiguous_result(f"人工标注数据中器物编号 {artifact_id} 存在多条记录")
-
-        gold = matches[0]
-        assets = await self._repository.get_gold_record_assets(
-            dataset_id=dataset["_id"],
-            record_id=gold["_id"],
-        )
         extracted = {
             key: field_value(record, key)
             for key in (
@@ -303,32 +280,30 @@ class VerificationService:
                 "completeness",
             )
         }
+        artifact_id = self._record_artifact_id(record)
         extracted["artifact_id"] = extracted["artifact_id"] or artifact_id
-        gold_fields = gold.get("fields", {})
-        deterministic = self._deterministic_compare(extracted, gold_fields)
-        deterministic.append(
+        heuristic = [
+            {
+                "field": item.scope,
+                "verdict": item.verdict,
+                "reason": item.reason,
+                "method": "rule_heuristic",
+            }
+            for item in evaluate_record_rules(
+                record=record,
+                rule_scopes=rule_scopes_from_rules(rules),
+                artifact_id_counts=artifact_id_counts,
+            )
+        ]
+        heuristic.append(
             {
                 "field": "artifact_crop",
-                "verdict": (
-                    "passed"
-                    if any(asset.get("asset_type") == "artifact_crop" for asset in assets)
-                    and visual_context["artifact_crop_present"]
-                    else "uncertain"
-                ),
-                "reason": "仅校验双方是否具备器物裁剪图；文本模型不判断图像像素相似度",
+                "verdict": "passed" if visual_context["artifact_crop_present"] else "failed",
+                "reason": "检查器物卡片是否关联线图或器物裁剪图",
                 "method": "deterministic_presence",
             }
         )
-        if any(asset.get("asset_type") == "color_plate" for asset in assets):
-            deterministic.append(
-                {
-                    "field": "color_plate",
-                    "verdict": "passed" if visual_context["color_plate_present"] else "failed",
-                    "reason": "人工标注数据含彩图引用，检查当前关系链是否关联彩图区域",
-                    "method": "deterministic_relation_presence",
-                }
-            )
-        deterministic.append(
+        heuristic.append(
             {
                 "field": "evidence_relation_chain",
                 "verdict": "passed" if visual_context["relation_count"] > 0 else "uncertain",
@@ -338,19 +313,14 @@ class VerificationService:
         )
         llm = await self._call_llm(
             extracted=extracted,
-            gold_fields=gold_fields,
+            rules=enabled_rule_payload(rules),
             evidence=self._evidence_quotes(record),
-            deterministic=deterministic,
+            heuristic=heuristic,
+            visual_context=visual_context,
         )
         verdict = str(llm.get("overall_verdict", "uncertain")).lower()
         if verdict not in {"passed", "failed", "uncertain"}:
             verdict = "uncertain"
-        hard_failure = any(
-            item.get("verdict") == "failed" and item.get("field") == "artifact_id"
-            for item in deterministic
-        )
-        if hard_failure:
-            verdict = "failed"
         confidence = llm.get("confidence", 0.5)
         try:
             confidence = max(0.0, min(1.0, float(confidence)))
@@ -364,9 +334,10 @@ class VerificationService:
             "ai_verdict": verdict,
             "ai_confidence": confidence,
             "ai_reason": str(llm.get("reason", ""))[:1000],
-            "ai_field_results": [*deterministic, *semantic_results][:50],
-            "gold_record_id": gold["_id"],
-            "gold_match_status": "matched",
+            "ai_field_results": [*heuristic, *semantic_results][:50],
+            "gold_record_id": None,
+            "gold_match_status": None,
+            "expected_label": expected_label,
             "conflict_resolved": False,
         }
 
@@ -374,9 +345,10 @@ class VerificationService:
         self,
         *,
         extracted: dict[str, Any],
-        gold_fields: dict[str, Any],
+        rules: list[dict[str, Any]],
         evidence: dict[str, list[str]],
-        deterministic: list[dict[str, Any]],
+        heuristic: list[dict[str, Any]],
+        visual_context: dict[str, Any],
     ) -> dict[str, Any]:
         payload = {
             "model": self._settings.verification_llm_model or self._settings.llm_model,
@@ -384,26 +356,30 @@ class VerificationService:
                 {
                     "role": "system",
                     "content": (
-                        "你是考古器物数据质量复核员。只比较自动抽取结果、OCR原文证据与人工标注数据。"
-                        "人工审核结论不会提供给你。不得改写生产数据。语义等价、单位等价和合理OCR纠错可判通过；"
-                        "关键信息矛盾、遗漏或无证据推断判不通过；无法确定则判uncertain。只输出JSON。"
+                        "你是考古器物卡片机器校验员。只根据操作员在第三页配置的校验规则、"
+                        "自动生成的器物卡片、OCR 原文证据和关系/裁剪图是否存在来判断。"
+                        "不要使用任何人工金标准标注，也不要猜测人工 PASS/FAIL。"
+                        "不得改写生产数据或人工核验结论。"
+                        "规则全部满足则 passed；关键字段与规则矛盾、缺失或无证据推断则 failed；"
+                        "无法确定则 uncertain。算法启发式检查仅供参考，最终以规则为准。只输出 JSON。"
                     ),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "extracted": extracted,
-                            "gold_standard": gold_fields,
+                            "verification_rules": rules,
+                            "extracted_card": extracted,
                             "ocr_evidence": evidence,
-                            "deterministic_checks": deterministic,
+                            "visual_context": visual_context,
+                            "algorithm_heuristic_checks": heuristic,
                             "required_output": {
                                 "overall_verdict": "passed|failed|uncertain",
                                 "confidence": "0..1",
                                 "reason": "concise Chinese explanation",
                                 "field_results": [
                                     {
-                                        "field": "field name",
+                                        "field": "field or rule name",
                                         "verdict": "passed|failed|uncertain",
                                         "reason": "why",
                                         "method": "semantic_llm",
@@ -420,8 +396,6 @@ class VerificationService:
             "temperature": 0,
             "max_tokens": self._settings.verification_llm_max_tokens,
         }
-        # Match extraction: DeepSeek thinking models otherwise burn tokens on
-        # reasoning and leave message.content empty, which blocks V-version creation.
         if self._settings.llm_provider.lower() == "deepseek":
             payload["thinking"] = {
                 "type": "enabled" if self._settings.llm_thinking else "disabled"
@@ -435,19 +409,19 @@ class VerificationService:
         async with self._semaphore:
             response = await self._client.post(url, headers=headers, json=payload)
         if not response.is_success:
-            raise DomainError(f"AI 复核服务返回 HTTP {response.status_code}: {response.text[:300]}")
+            raise DomainError(f"机器校验服务返回 HTTP {response.status_code}: {response.text[:300]}")
         data = response.json()
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise DomainError("AI 复核服务未返回 choices")
+            raise DomainError("机器校验服务未返回 choices")
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         if not isinstance(message, dict):
-            raise DomainError("AI 复核服务返回的 message 无效")
+            raise DomainError("机器校验服务返回的 message 无效")
         content = self._message_text(message.get("content"))
         if not content:
             content = self._message_text(message.get("reasoning_content"))
         if not content:
-            raise DomainError("AI 复核服务返回空内容，请检查模型与 thinking 配置")
+            raise DomainError("机器校验服务返回空内容，请检查模型与 thinking 配置")
         return parse_json_object(content)
 
     @staticmethod
@@ -467,6 +441,7 @@ class VerificationService:
                         parts.append(str(text))
             return "".join(parts).strip()
         return str(value).strip()
+
     @staticmethod
     def _record_artifact_id(record: dict[str, Any]) -> str:
         identity = record.get("linkage", {}).get("identity", {})
@@ -476,6 +451,16 @@ class VerificationService:
             or field_value(record, "artifact_id")
         )
         return normalize_identifier(candidate)
+
+    @staticmethod
+    def _artifact_id_counts(records: list[dict[str, Any]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for record in records:
+            artifact_id = VerificationService._record_artifact_id(record)
+            if not artifact_id:
+                continue
+            counts[artifact_id] = counts.get(artifact_id, 0) + 1
+        return counts
 
     @staticmethod
     def _evidence_quotes(record: dict[str, Any]) -> dict[str, list[str]]:
@@ -516,37 +501,12 @@ class VerificationService:
         }
 
     @staticmethod
-    def _deterministic_compare(
-        extracted: dict[str, Any],
-        gold: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
-        for key in ("artifact_id", "measurements", "figure_caption"):
-            actual, expected = extracted.get(key), gold.get(key)
-            if actual in (None, "") and expected in (None, ""):
-                verdict = "passed"
-            elif actual in (None, "") or expected in (None, ""):
-                verdict = "failed"
-            else:
-                verdict = (
-                    "passed" if compact_text(actual) == compact_text(expected) else "uncertain"
-                )
-            results.append(
-                {
-                    "field": key,
-                    "verdict": verdict,
-                    "reason": "规范化后直接比较",
-                    "method": "deterministic_normalized",
-                }
-            )
-        return results
-
-    @staticmethod
     def _consensus(
         *,
-        human_verdict: str,
+        human_verdict: str | None,
         ai_verdict: str | None,
-        gold_match_status: str | None,
+        expected_label: str | None = None,
+        gold_match_status: str | None = None,
     ) -> str:
         if gold_match_status == "unavailable":
             return "benchmark_unavailable"
@@ -562,18 +522,6 @@ class VerificationService:
             "ai_reason": reason,
             "ai_field_results": [],
             "gold_record_id": None,
-            "gold_match_status": "unavailable",
-            "conflict_resolved": False,
-        }
-
-    @staticmethod
-    def _ambiguous_result(reason: str) -> dict[str, Any]:
-        return {
-            "ai_verdict": "uncertain",
-            "ai_confidence": 0.0,
-            "ai_reason": reason,
-            "ai_field_results": [],
-            "gold_record_id": None,
-            "gold_match_status": "not_found",
+            "gold_match_status": None,
             "conflict_resolved": False,
         }

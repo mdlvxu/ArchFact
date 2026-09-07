@@ -2,6 +2,45 @@
 
 [English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
 
+## quality-baseline-v4 — 2026-09-07
+
+Main changes since `quality-baseline-v3` (2026-08-13).
+
+### Large-report import and job resume
+
+- Default PDF upload cap is 512 MB; the Vite proxy and client timeouts scale with file size
+- The page navigator shows upload / save / parse progress instead of freezing on `arrayBuffer()`
+- Multipart uploads no longer send a boundary-less `Content-Type`, and PDF.js blob URLs stay alive until the document is released
+- FastAPI startup resumes interrupted extraction jobs and skips pages that already finished
+- Stale rematch, AI verification, and quality-evaluation runs are marked failed after process restart
+
+### Hardware auto-tune and MongoDB
+
+- `HARDWARE_AUTO_TUNE=true` (default) sets OCR workers, discovery concurrency, and page-batch size from the machine
+- Unique `documents.sha256` reuses an already-stored PDF instead of writing GridFS twice
+- Compound indexes plus TTL on `job_events` (60d) and semantic cache (90d)
+- Unique partial index for one active verification session per job
+
+### Restore the job that is still running
+
+- `GET /extraction-jobs/recent/latest?include_active=true` prefers queued / extracting jobs over the latest completed one
+- After refresh, the data-extraction page attaches to the in-progress report instead of an older completed PDF left in `localStorage`
+- The page-navigator list fills the leftover column height so the last thumbnail and page label are not clipped
+
+### Backend structure
+
+- Domain helpers live under `app/domain/`; view/enrichment mapping under `app/application/`
+- Extraction routes are split into jobs / records / rematches / verification, same `/extraction-jobs` prefix
+- `MongoRepository` is a facade over persistence mixins; `result_fusion` stays a single module and is now v24
+
+### Tests
+
+- Frontend: 83 passed, 1 skipped (`pnpm test:run`)
+- Backend: 190 passed (`pytest`)
+- New coverage for PDF import progress, hardware auto-tune, Mongo schema, and machine verification
+
+---
+
 ## quality-baseline-v3 — 2026-08-13
 
 Main changes since `quality-baseline-v2` (2026-08-12).

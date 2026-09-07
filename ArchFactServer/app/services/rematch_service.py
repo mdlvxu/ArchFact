@@ -2,9 +2,11 @@ import asyncio
 import copy
 from typing import Any
 
+from app.domain.relations import relation_key
+from app.domain.time import utc_now
 from app.infrastructure.task_dispatcher import LocalJobDispatcher
 from app.models.schemas import ExtractionConfig, RematchCreate
-from app.repositories.mongo_repository import MongoRepository, utc_now
+from app.repositories.mongo_repository import MongoRepository
 from app.services.artifact_entity_linker import ArtifactEntityLinker
 from app.services.page_discovery import PageDiscoveryService
 from app.services.relation_matcher import RelationMatcher
@@ -152,8 +154,8 @@ class RematchService:
             relation_by_id = {
                 relation_id: relation
                 for relation_id, relation in generated_by_id.items()
-                if self._repository._relation_key(relation)
-                not in protection["rejected_relation_keys"]
+                if relation_key(relation)
+                    not in protection["rejected_relation_keys"]
             }
             for relation_id in protection["protected_relation_ids"]:
                 protected = protection["relation_by_id"].get(relation_id)
@@ -201,6 +203,18 @@ class RematchService:
             )
 
             await self._ensure_not_cancelled(rematch_id)
+            entity_output = self._entity_linker.link(
+                job_id=job_id,
+                document_id=str(job["document_id"]),
+                records=records,
+                regions=regions,
+            )
+            records = entity_output.records
+            records = self._result_fusion.discard_unbound_sparse_catalog_records(
+                records=records,
+                regions=regions,
+                relations=relations,
+            )
             entity_output = self._entity_linker.link(
                 job_id=job_id,
                 document_id=str(job["document_id"]),

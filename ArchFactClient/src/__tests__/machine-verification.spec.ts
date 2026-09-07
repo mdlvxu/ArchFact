@@ -13,6 +13,7 @@ const apiMocks = vi.hoisted(() => ({
   cancelRematch: vi.fn(),
   createRematch: vi.fn(),
   createVerificationSession: vi.fn(),
+  getActiveVerificationSession: vi.fn(),
   getRematch: vi.fn(),
   getRematchChanges: vi.fn(),
   createQualityEvaluation: vi.fn(),
@@ -139,7 +140,7 @@ describe('Machine Verification 页面组件', () => {
     expect(wrapper.emitted('selectVersion')?.[0]).toEqual([2])
   })
 
-  it('执行校验时创建后端会话并交给第二页处理固定样本', async () => {
+  it('执行校验时创建会话并跳到预览页查看 18 条样本', async () => {
     apiMocks.getVerificationVersions.mockResolvedValue([])
     apiMocks.createVerificationSession.mockResolvedValue({
       id: 'verify-1',
@@ -152,6 +153,7 @@ describe('Machine Verification 页面组件', () => {
       reviewed_count: 0,
       sample_count: 18,
       version_id: null,
+      ai_run_id: null,
       created_at: '2026-07-18T00:00:00Z',
       updated_at: '2026-07-18T00:00:00Z',
       completed_at: null,
@@ -166,6 +168,39 @@ describe('Machine Verification 页面组件', () => {
     expect(wrapper.emitted('startVerification')?.[0]?.[0]).toMatchObject({
       id: 'verify-1',
       target_version: 1,
+      sample_count: 18,
+    })
+  })
+
+  it('创建会话失败时复用进行中的校验并仍然进入审核', async () => {
+    apiMocks.getVerificationVersions.mockResolvedValue([])
+    apiMocks.createVerificationSession.mockRejectedValue(new Error('conflict'))
+    apiMocks.getActiveVerificationSession.mockResolvedValue({
+      id: 'verify-active',
+      job_id: 'job-1',
+      cohort_id: 'cohort-1',
+      target_version: 2,
+      status: 'in_progress',
+      rules,
+      items: [],
+      reviewed_count: 1,
+      sample_count: 18,
+      version_id: null,
+      ai_run_id: null,
+      created_at: '2026-07-18T00:00:00Z',
+      updated_at: '2026-07-18T00:00:00Z',
+      completed_at: null,
+    })
+    const wrapper = mount(MachineVerificationWorkspace, {
+      props: { jobId: 'job-1' },
+    })
+    await nextTick()
+    await wrapper.find('.execute-button').trigger('click')
+    await vi.waitFor(() => expect(apiMocks.getActiveVerificationSession).toHaveBeenCalled())
+
+    expect(wrapper.emitted('startVerification')?.[0]?.[0]).toMatchObject({
+      id: 'verify-active',
+      target_version: 2,
       sample_count: 18,
     })
   })

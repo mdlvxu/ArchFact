@@ -10,6 +10,7 @@ def test_verification_session_routes_are_exposed() -> None:
     base = "/api/v1/extraction-jobs/{job_id}"
 
     assert "post" in paths[f"{base}/verification-sessions"]
+    assert "get" in paths[f"{base}/verification-sessions/active"]
     assert "get" in paths[f"{base}/verification-sessions/{{session_id}}"]
     assert "get" in paths[f"{base}/verification-sessions/{{session_id}}/records"]
     assert "patch" in paths[f"{base}/verification-sessions/{{session_id}}/records/{{record_id}}"]

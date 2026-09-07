@@ -260,18 +260,7 @@ describe('Data Preview redesigned interactions', () => {
     expect(wrapper.find('.relation-lines path').attributes('d')).not.toBe(firstPath)
     expect(wrapper.findAll('.evidence-box')[1]?.classes()).toContain('evidence-box--active')
     expect(wrapper.find('.evidence-target--text').exists()).toBe(false)
-
-    await wrapper.find('.relation-review__actions button').trigger('click')
-    expect(wrapper.emitted('reviewRelation')?.[0]).toEqual(['relation-green', 'accepted'])
-
-    await wrapper.findAll('.relation-review__actions button')[2]?.trigger('click')
-    await wrapper.findAll('.evidence-box')[0]?.trigger('click')
-    expect(wrapper.emitted('rebindRelation')?.[0]).toEqual([{
-      relationId: 'relation-green',
-      sourceRegionId: 'region-green',
-      targetRegionId: 'region-red',
-      relationType: 'evidence_for',
-    }])
+    expect(wrapper.find('.relation-review').exists()).toBe(false)
   })
 
   it('keeps overlapping relation controls without drawing a short line inside the evidence box', () => {
@@ -326,7 +315,7 @@ describe('Data Preview redesigned interactions', () => {
 
     expect(wrapper.find('.evidence-target--color_plate').exists()).toBe(false)
     expect(wrapper.findAll('.relation-lines path')).toHaveLength(0)
-    expect(wrapper.find('.relation-review__type').text()).toBe('drawing of')
+    expect(wrapper.find('.relation-review').exists()).toBe(false)
   })
 
   it('hides sequence-number boxes and sequence-only relations from the preview canvas', () => {
@@ -741,8 +730,7 @@ describe('Data Preview redesigned interactions', () => {
       .toBe('Plate reference matched')
     expect(wrapper.find('.evidence-target--color_plate small').text())
       .toContain('Color plate located by an exact plate and item reference')
-    expect(wrapper.find('.relation-review__type').text())
-      .toBe('plate reference to color')
+    expect(wrapper.find('.relation-review').exists()).toBe(false)
   })
 
   it('terminates a cross-page line on the highlighted artifact box, not the page card', async () => {

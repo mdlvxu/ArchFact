@@ -1,4 +1,5 @@
 import asyncio
+import math
 import re
 import tempfile
 import time
@@ -56,6 +57,24 @@ class PageDiscoveryService:
         self._settings = settings
         self._ocr_engine = ocr_engine
 
+    @staticmethod
+    def scaled_discovery_ocr_max_pages(configured: int, page_count: int) -> int:
+        """Raise the OCR sample cap on long reports so later plates can still be indexed."""
+
+        if configured <= 0:
+            return 0
+        if page_count <= configured:
+            return configured
+        return min(page_count, max(configured, math.ceil(page_count * 0.45)))
+
+    @staticmethod
+    def scaled_discovery_recall_max_pages(configured: int, page_count: int) -> int:
+        """Raise cross-page recall on long reports, capped at the settings upper bound."""
+
+        if page_count <= configured:
+            return configured
+        return min(200, max(configured, math.ceil(page_count * 0.15)))
+
     async def scan(self, pdf_path: Path) -> PageDiscoveryResult:
         started = time.perf_counter()
         page_count, pages = await asyncio.to_thread(self._scan_sync, pdf_path)
@@ -82,7 +101,10 @@ class PageDiscoveryService:
             return pages
 
         candidates = self._ocr_candidates(pages, unresolved, requested_pages)
-        max_pages = self._settings.discovery_ocr_max_pages
+        max_pages = self.scaled_discovery_ocr_max_pages(
+            self._settings.discovery_ocr_max_pages,
+            len(pages),
+        )
         if max_pages > 0:
             candidates = candidates[:max_pages]
         batch_size = max(1, self._settings.discovery_ocr_concurrency)
@@ -156,8 +178,12 @@ class PageDiscoveryService:
             scored.append((score, page_no, matches))
 
         scored.sort(key=lambda item: (-item[0], item[1]))
+        recall_limit = self.scaled_discovery_recall_max_pages(
+            self._settings.discovery_max_recalled_pages,
+            len(pages),
+        )
         recalled_pages: list[int] = []
-        for _, page_no, matches in scored[: self._settings.discovery_max_recalled_pages]:
+        for _, page_no, matches in scored[:recall_limit]:
             recalled_pages.append(page_no)
             matched_references.update(matches)
         return CandidateRecall(
