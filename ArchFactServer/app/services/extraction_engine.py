@@ -21,6 +21,123 @@ class PageChunk:
     blocks: list[dict[str, Any]]
 
 
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _strip_json_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.I)
+        stripped = re.sub(r"\s*```\s*$", "", stripped)
+    return stripped.strip()
+
+
+def _extract_json_candidate(text: str) -> str:
+    stripped = _strip_json_fences(text)
+    object_start = stripped.find("{")
+    array_start = stripped.find("[")
+    starts = [index for index in (object_start, array_start) if index >= 0]
+    if not starts:
+        return stripped
+    start = min(starts)
+    end_char = "}" if start == object_start and (array_start < 0 or object_start <= array_start) else "]"
+    end = stripped.rfind(end_char)
+    if end > start:
+        return stripped[start : end + 1]
+    return stripped[start:]
+
+
+def _repair_json_text(text: str) -> str:
+    candidate = _extract_json_candidate(text)
+    previous = None
+    while previous != candidate:
+        previous = candidate
+        candidate = _TRAILING_COMMA_RE.sub(r"\1", candidate)
+    return candidate
+
+
+def _json_looks_truncated(text: str) -> bool:
+    candidate = _extract_json_candidate(text).strip()
+    if not candidate or candidate[0] not in "{[":
+        return not candidate
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for char in candidate:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if not stack or stack[-1] != char:
+                return True
+            stack.pop()
+    return bool(stack) or in_string or escape
+
+
+def _close_truncated_json(text: str) -> str | None:
+    candidate = _repair_json_text(text).rstrip()
+    if not candidate or candidate[0] not in "{[":
+        return None
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for char in candidate:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if not stack or stack[-1] != char:
+                return None
+            stack.pop()
+    if not stack and not in_string:
+        return None
+    closed = candidate
+    if in_string:
+        if escape:
+            closed = closed[:-1]
+        closed += '"'
+    closed = closed.rstrip()
+    if closed.endswith(","):
+        closed = closed[:-1].rstrip()
+    if closed.endswith(":"):
+        closed += " null"
+    closed += "".join(reversed(stack))
+    try:
+        json.loads(closed)
+    except json.JSONDecodeError:
+        return None
+    return closed
+
+
+def _payload_has_extractable_data(parsed: Any) -> bool:
+    if isinstance(parsed, list):
+        return any(isinstance(item, dict) and item for item in parsed)
+    if not isinstance(parsed, dict) or not parsed:
+        return False
+    records = parsed.get("records")
+    if isinstance(records, list) and any(isinstance(item, dict) and item for item in records):
+        return True
+    return isinstance(parsed.get("fields"), dict)
+
+
 class ExtractionEngine(Protocol):
     async def extract(
         self,
@@ -139,26 +256,10 @@ class StructuredExtractionEngineBase:
         payload = raw
         for _ in range(3):
             if isinstance(payload, str):
-                try:
-                    payload = json.loads(payload)
-                except json.JSONDecodeError as exc:
-                    cleaned = payload.strip()
-                    if cleaned.startswith("```") and cleaned.endswith("```"):
-                        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
-                        cleaned = re.sub(r"\s*```$", "", cleaned)
-                    object_start = cleaned.find("{")
-                    object_end = cleaned.rfind("}")
-                    if object_start >= 0 and object_end > object_start:
-                        try:
-                            payload = json.loads(cleaned[object_start : object_end + 1])
-                            continue
-                        except json.JSONDecodeError:
-                            pass
-                    raise DomainError(
-                        "结构化抽取服务返回的不是合法 JSON",
-                        code=5022,
-                        status_code=502,
-                    ) from exc
+                payload = self._parse_json_payload(payload)
+                continue
+            if isinstance(payload, list):
+                payload = {"records": payload}
                 continue
             if isinstance(payload, dict) and "output" in payload:
                 payload = payload["output"]
@@ -167,6 +268,31 @@ class StructuredExtractionEngineBase:
         if not isinstance(payload, dict):
             raise DomainError("Coze 工作流返回结构无效", code=5023, status_code=502)
         return payload
+
+    def _parse_json_payload(self, content: str) -> Any:
+        candidate = _repair_json_text(content)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            closed = _close_truncated_json(candidate)
+            if closed is not None:
+                try:
+                    parsed = json.loads(closed)
+                except json.JSONDecodeError:
+                    parsed = None
+                if parsed is not None and _payload_has_extractable_data(parsed):
+                    return parsed
+            if _json_looks_truncated(content) or _json_looks_truncated(candidate):
+                raise DomainError(
+                    "结构化抽取服务返回的 JSON 被截断",
+                    code=5054,
+                    status_code=502,
+                ) from exc
+            raise DomainError(
+                "结构化抽取服务返回的不是合法 JSON",
+                code=5022,
+                status_code=502,
+            ) from exc
 
     def _normalize_record(
         self,
@@ -880,10 +1006,12 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             response = await self._request_completion(chunk, config)
             return self._records_from_response(response, chunk, config)
         except DomainError as exc:
-            if exc.code not in {5054, 5056}:
+            if exc.code not in {5022, 5054, 5056}:
                 raise
-            if exc.code == 5054 and split_depth >= 6:
-                return await self._retry_with_expanded_output(chunk, config)
+            if exc.code in {5022, 5054} and split_depth >= 6:
+                if exc.code == 5054:
+                    return await self._retry_with_expanded_output(chunk, config)
+                raise
             if exc.code == 5056 and split_depth >= 12:
                 raise
             smaller_chunks = self._bisect_chunk(chunk)
@@ -1011,7 +1139,12 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             )
         if not isinstance(content, str) or not content.strip():
             raise DomainError("大模型没有返回结构化内容", code=5055, status_code=502)
-        return self._records_from_payload(content, chunk, config)
+        try:
+            return self._records_from_payload(content, chunk, config)
+        except DomainError as exc:
+            if exc.code == 5054:
+                self._metric(chunk.chunk_id)["truncation_count"] += 1
+            raise
 
     def _split_chunk(
         self,

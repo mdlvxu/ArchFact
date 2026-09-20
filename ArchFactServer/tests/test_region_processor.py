@@ -165,3 +165,97 @@ def test_region_processor_reuses_confident_page_caption_before_crop_ocr(tmp_path
     assert result[0]["ocr_reused_from_page"] is True
     assert result[0]["ocr_model_run_id"] == "run-page-ocr"
     assert ocr.calls == []
+
+
+def test_region_processor_reuses_confident_page_number_before_crop_ocr(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 100), "white").save(image_path)
+    settings = Settings(
+        app_env="test",
+        file_storage_root=tmp_path / "files",
+        region_crop_padding=0,
+        region_ocr_min_confidence=0.5,
+    )
+    ocr = FakeRegionOcrEngine()
+    processor = RegionProcessor(
+        settings=settings,
+        image_storage=LocalImageStorage(settings),
+        ocr_engine=ocr,
+    )
+
+    result = asyncio.run(
+        processor.process(
+            page=PageImageInput(
+                job_id="job-1",
+                document_id="document-1",
+                page_no=185,
+                image_path=image_path,
+                object_key="documents/document-1/pages/0185/rendered/page.png",
+                width=100,
+                height=100,
+            ),
+            regions=[{"id": "number-1", "kind": "number", "bbox": [0.2, 0.6, 0.35, 0.72]}],
+            page_ocr_blocks=[
+                {
+                    "text": "M1:40",
+                    "bbox": [0.21, 0.61, 0.34, 0.71],
+                    "confidence": 0.96,
+                    "source": "paddleocr",
+                }
+            ],
+            page_ocr_model_run_id="run-page-ocr",
+        )
+    )
+
+    assert result[0]["text"] == "M1:40"
+    assert result[0]["ocr_reused_from_page"] is True
+    assert result[0]["ocr_model_run_id"] == "run-page-ocr"
+    assert ocr.calls == []
+
+
+def test_region_processor_crop_ocrs_number_when_page_line_has_two_ids(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 100), "white").save(image_path)
+    settings = Settings(
+        app_env="test",
+        file_storage_root=tmp_path / "files",
+        region_crop_padding=0,
+        region_ocr_min_confidence=0.5,
+    )
+    ocr = FakeRegionOcrEngine()
+    processor = RegionProcessor(
+        settings=settings,
+        image_storage=LocalImageStorage(settings),
+        ocr_engine=ocr,
+    )
+
+    result = asyncio.run(
+        processor.process(
+            page=PageImageInput(
+                job_id="job-1",
+                document_id="document-1",
+                page_no=185,
+                image_path=image_path,
+                object_key="documents/document-1/pages/0185/rendered/page.png",
+                width=100,
+                height=100,
+            ),
+            regions=[{"id": "number-1", "kind": "number", "bbox": [0.2, 0.6, 0.32, 0.7]}],
+            page_ocr_blocks=[
+                {
+                    "text": "M5:6 M9:1",
+                    "bbox": [0.18, 0.58, 0.62, 0.72],
+                    "confidence": 0.97,
+                    "source": "paddleocr",
+                }
+            ],
+            page_ocr_model_run_id="run-page-ocr",
+        )
+    )
+
+    assert result[0].get("ocr_reused_from_page") is not True
+    assert result[0]["text"] == "12"
+    assert len(ocr.calls) == 1
+    assert ocr.calls[0].timeout_seconds == 20.0

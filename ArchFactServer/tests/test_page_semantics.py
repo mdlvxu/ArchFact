@@ -1,4 +1,4 @@
-from app.services.page_semantics import PageSemantics
+from app.domain.page_semantics import PageSemantics
 
 
 def _text(region_id: str, page: int, text: str, bbox: list[float]) -> dict:

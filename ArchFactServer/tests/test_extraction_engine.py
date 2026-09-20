@@ -531,6 +531,64 @@ def test_coze_adapter_decodes_output_when_response_contains_run_id() -> None:
     assert payload["records"] == []
 
 
+def test_decode_payload_repairs_trailing_commas_and_fences() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    payload = engine._decode_payload(
+        """```json
+        {
+          "schema_version": "1.0",
+          "chunk_id": "job:page:142",
+          "records": [
+            {"record_type": "artifact", "fields": {"artifact_id": {"value": "M2:4"}}},
+          ],
+        }
+        ```"""
+    )
+
+    assert payload["chunk_id"] == "job:page:142"
+    assert payload["records"][0]["fields"]["artifact_id"]["value"] == "M2:4"
+
+
+def test_decode_payload_accepts_top_level_record_array() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    payload = engine._decode_payload(
+        '[{"record_type": "artifact", "fields": {"artifact_id": {"value": "M2:5"}}}]'
+    )
+
+    assert payload["records"][0]["fields"]["artifact_id"]["value"] == "M2:5"
+
+
+def test_decode_payload_salvages_truncated_records_json() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    payload = engine._decode_payload(
+        '{"schema_version":"1.0","records":['
+        '{"record_type":"artifact","fields":{"artifact_id":{"value":"M2:4","status":"valid"'
+    )
+
+    assert payload["records"][0]["fields"]["artifact_id"]["value"] == "M2:4"
+
+
+def test_decode_payload_treats_unrecoverable_truncation_as_5054() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    with pytest.raises(DomainError) as exc_info:
+        engine._decode_payload('{"records": [')
+
+    assert exc_info.value.code == 5054
+
+
+def test_decode_payload_still_rejects_invalid_complete_json() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    with pytest.raises(DomainError) as exc_info:
+        engine._decode_payload('{"records": [not-json]}')
+
+    assert exc_info.value.code == 5022
+
+
 def test_coze_http_engine_calls_deployed_service(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -1090,6 +1148,120 @@ def test_groq_truncated_output_is_bisected_and_merged(
     assert {record["fields"]["artifact_id"]["value"] for record in records} == {
         "H1:1",
         "H2:1",
+    }
+
+
+def test_stop_reason_truncated_json_is_bisected_and_merged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: httpx.Timeout) -> None:
+            del timeout
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, object],
+            **kwargs: object,
+        ) -> httpx.Response:
+            del kwargs
+            requests.append(json)
+            user_input = json_module.loads(json["messages"][1]["content"])  # type: ignore[index]
+            chunk_id = user_input["chunk_id"]
+            if ":retry:" not in chunk_id:
+                return httpx.Response(
+                    200,
+                    json={
+                        "choices": [
+                            {
+                                "finish_reason": "stop",
+                                "message": {"content": '{"records": ['},
+                            }
+                        ]
+                    },
+                    request=httpx.Request("POST", url),
+                )
+
+            source_text = "\n".join(block["text"] for block in user_input.get("ocr_blocks", []))
+            artifact_id = "M2:4" if "M2:4" in source_text else "M2:5"
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": json_module.dumps(
+                                    {
+                                        "schema_version": "1.0",
+                                        "chunk_id": chunk_id,
+                                        "records": [
+                                            {
+                                                "record_type": "artifact",
+                                                "fields": {
+                                                    "artifact_id": {
+                                                        "value": artifact_id,
+                                                        "status": "valid",
+                                                        "evidence": [{"quote": artifact_id}],
+                                                    }
+                                                },
+                                            }
+                                        ],
+                                    }
+                                )
+                            },
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    json_module = json
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    engine = OpenAICompatibleExtractionEngine(
+        Settings(
+            _env_file=None,
+            extraction_engine="llm",
+            llm_provider="deepseek",
+            llm_api_key="test-key",
+            llm_input_chunk_chars=2000,
+            llm_chunk_overlap_chars=0,
+        )
+    )
+    config = ExtractionConfig(
+        template_id="basic",
+        template_name="Basic",
+        fields=[ExtractionFieldSpec(key="artifact_id", label="Artifact ID", type="string")],
+    )
+
+    records = asyncio.run(
+        engine.extract(
+            PageChunk(
+                chunk_id="job:page:142",
+                page_no=142,
+                text="M2:4 " + "线图残片" * 80 + "\nM2:5 " + "线图残片" * 80,
+                blocks=[
+                    {"text": "M2:4 " + "线图残片" * 80},
+                    {"text": "M2:5 " + "线图残片" * 80},
+                ],
+            ),
+            config,
+        )
+    )
+
+    assert len(requests) == 3
+    assert {record["fields"]["artifact_id"]["value"] for record in records} == {
+        "M2:4",
+        "M2:5",
     }
 
 

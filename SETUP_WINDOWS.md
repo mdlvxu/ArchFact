@@ -16,10 +16,9 @@
 完整 OCR/检测环境还需要：
 
 - Miniconda/Anaconda
-- Python 3.10 独立 PaddleOCR 环境
-- PaddleOCR 2.9.0、PaddlePaddle 3.0.0
+- Python 3.10 独立 PaddleOCR 环境（当前推荐 `ppocr3`：PaddleOCR 3.7 + CPU PaddlePaddle）
 - 使用 GPU YOLO 时需要 NVIDIA 驱动及 CUDA 12.8 兼容的 PyTorch
-- `models/archaeology-yolo/v1/best.pt` 自定义模型权重
+- `ArchFactServer/models/archaeology-yolo/v1/best.pt` 自定义模型权重（不进 Git，需本机放置）
 
 ## 2. 获取源码
 
@@ -123,27 +122,37 @@ pnpm dev
 
 ## 6. 启用 PaddleOCR
 
-PaddlePaddle 不应安装进 FastAPI 的 Python 3.13 环境。创建独立 Python 3.10 环境：
+PaddlePaddle 不应安装进 FastAPI 的 Python 3.13 环境。当前推荐独立 conda 环境 `ppocr3`（Python 3.10 + PaddleOCR 3.7 CPU 版 + `PP-OCRv6_small`）：
 
 ```powershell
-conda create -n ppocr python=3.10 -y
-conda activate ppocr
+conda create -n ppocr3 python=3.10 -y
+conda activate ppocr3
 python -m pip install --upgrade pip
-python -m pip install paddleocr==2.9.0 paddlepaddle==3.0.0
-python -c "from paddleocr import PaddleOCR; print('PaddleOCR OK')"
+python -m pip install paddleocr==3.7.0 paddlepaddle
+```
+
+下载并安装项目内的 small 权重（写入 `ArchFactServer/models/paddleocr/`，不进 Git）：
+
+```powershell
+Set-Location ArchFactServer
+# 将 python.exe 换成本机 ppocr3 路径
+C:/Users/<USER>/miniconda3/envs/ppocr3/python.exe scripts/download_ppocrv6_small.py
 ```
 
 在 `ArchFactServer/.env` 中配置实际路径：
 
 ```dotenv
 OCR_ADAPTER=paddle
-PADDLE_OCR_PYTHON=C:/Users/<USER>/miniconda3/envs/ppocr/python.exe
+PADDLE_OCR_PYTHON=C:/Users/<USER>/miniconda3/envs/ppocr3/python.exe
 PADDLE_OCR_WORKER_PATH=app/services/paddle_ocr_worker.py
 PADDLE_OCR_LANGUAGE=ch
 PADDLE_OCR_USE_ANGLE_CLS=false
+PADDLE_OCR_API_VERSION=auto
+PADDLE_OCR_MODEL=PP-OCRv6_small
+PADDLE_OCR_VERSION=3.7
 ```
 
-首次运行会下载中文 OCR 模型到用户目录下的 `.paddleocr`。离线电脑需要提前下载或从旧电脑复制该缓存。
+如需沿用旧的 2.9 + `ch_PP-OCRv4` 环境 `ppocr`，把 `PADDLE_OCR_PYTHON` 指回该环境，并设置 `PADDLE_OCR_MODEL=ch_PP-OCRv4`、`PADDLE_OCR_VERSION=2.9`。换模型会让 OCR 页缓存失效。
 
 如果使用 Tesseract 作为替代方案，请安装 Tesseract 5 和 `chi_sim`、`eng` 语言包，然后配置：
 

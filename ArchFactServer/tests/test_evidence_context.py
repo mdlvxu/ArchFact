@@ -3,7 +3,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from app.api.v1.extraction_jobs import get_record_evidence_context
+from app.api.v1.extraction_records import get_record_evidence_context
 
 
 class EvidenceContextRepository:

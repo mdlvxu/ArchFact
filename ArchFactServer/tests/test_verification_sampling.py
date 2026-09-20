@@ -1,4 +1,4 @@
-from app.services.verification_sampling import (
+from app.domain.verification_sampling import (
     evaluate_record_rules,
     select_balanced_verification_sample,
 )

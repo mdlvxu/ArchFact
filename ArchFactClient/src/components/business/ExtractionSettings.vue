@@ -29,11 +29,17 @@ import type { PdfPageItem } from '@/types/pdf'
 interface Props {
   pages?: PdfPageItem[]
   selectedPages?: number[]
+  running?: boolean
+  stopping?: boolean
+  progress?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
   pages: () => [],
   selectedPages: () => [],
+  running: false,
+  stopping: false,
+  progress: 0,
 })
 
 const { t, localize } = useI18n()
@@ -61,9 +67,21 @@ function cloneTemplate(template: ExtractionTemplate): ExtractionTemplate {
 }
 
 const enabledRules = computed(() => rules.value.filter((rule) => rule.enabled))
+const extractBusy = computed(() => props.running || props.stopping)
+const extractButtonLabel = computed(() => {
+  if (props.stopping) return t('settings.stopping')
+  if (props.running) {
+    const percent = Math.max(0, Math.min(100, Math.round(props.progress)))
+    return percent > 0
+      ? t('settings.extractingProgress', { percent })
+      : t('settings.extracting')
+  }
+  return t('settings.start')
+})
 
 /** 将 UI 状态转换为稳定的后端契约，组件外部无需理解弹框内部状态。 */
 function requestExtraction() {
+  if (extractBusy.value) return
   emit(
     'extract',
     buildExtractionConfig({
@@ -173,10 +191,12 @@ onBeforeUnmount(() => {
       <el-button
         class="extract-button"
         size="small"
-        :loading="configurationLoading"
+        :loading="extractBusy"
+        :disabled="extractBusy"
+        :title="extractBusy ? t('settings.extractingHint') : undefined"
         @click="requestExtraction"
       >
-        {{ t('settings.start') }}
+        {{ extractButtonLabel }}
       </el-button>
     </div>
 
@@ -342,6 +362,17 @@ onBeforeUnmount(() => {
   color: #fff;
   background: #bf6821;
   border-color: #bf6821;
+}
+
+.extract-button.is-disabled,
+.extract-button.is-loading,
+.extract-button:hover.is-disabled,
+.extract-button:hover.is-loading {
+  color: #fff;
+  cursor: not-allowed;
+  background: #c4a58d;
+  border-color: #c4a58d;
+  box-shadow: none;
 }
 
 .setting-card {
