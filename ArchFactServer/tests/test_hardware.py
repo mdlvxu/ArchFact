@@ -1,10 +1,14 @@
+from types import SimpleNamespace
+
 from app.core.config import Settings
 from app.core.hardware import (
     HardwareProfile,
     apply_hardware_profile,
+    ocr_worker_cap,
     recommend_local_runtime,
     resolve_yolo_device,
 )
+from app.services.page_preprocessor import ocr_prepare_concurrency
 
 
 def _profile(**overrides: object) -> HardwareProfile:
@@ -31,7 +35,7 @@ def test_recommend_keeps_small_laptops_from_oversubscribing() -> None:
 
 
 def test_recommend_uses_more_ocr_workers_on_high_core_gpu_machine() -> None:
-    tune = recommend_local_runtime(
+    heavy = recommend_local_runtime(
         _profile(
             cpu_count=16,
             memory_gb=32.0,
@@ -39,12 +43,32 @@ def test_recommend_uses_more_ocr_workers_on_high_core_gpu_machine() -> None:
             cuda_device_count=1,
             cuda_device_name="NVIDIA GeForce RTX 4070",
             cuda_memory_gb=12.0,
-        )
+        ),
+        ocr_model="PP-OCRv6_medium",
+    )
+    light = recommend_local_runtime(
+        _profile(
+            cpu_count=16,
+            memory_gb=32.0,
+            cuda_available=True,
+            cuda_device_count=1,
+            cuda_device_name="NVIDIA GeForce RTX 4070",
+            cuda_memory_gb=12.0,
+        ),
+        ocr_model="PP-OCRv6_small",
     )
 
-    assert tune.yolo_device == "0"
-    assert tune.paddle_ocr_workers >= 4
-    assert tune.page_preparation_batch_size >= 16
+    assert heavy.yolo_device == "0"
+    assert heavy.paddle_ocr_workers == 2
+    assert light.paddle_ocr_workers == 8
+    assert light.page_preparation_batch_size >= 16
+    assert light.paddle_ocr_worker_threads >= 1
+
+
+def test_ocr_worker_cap_follows_model_tier() -> None:
+    assert ocr_worker_cap("PP-OCRv6_medium") == 2
+    assert ocr_worker_cap("PP-OCRv6_small") == 8
+    assert ocr_worker_cap("ch_PP-OCRv4") == 8
 
 
 def test_yolo_device_falls_back_to_cpu_when_cuda_is_missing() -> None:
@@ -67,6 +91,7 @@ def test_apply_hardware_profile_overrides_copied_env_counts() -> None:
         paddle_ocr_worker_threads=6,
         discovery_ocr_concurrency=2,
         page_preparation_batch_size=8,
+        paddle_ocr_model="PP-OCRv6_medium",
         yolo_device="0",
     )
     apply_hardware_profile(
@@ -82,8 +107,8 @@ def test_apply_hardware_profile_overrides_copied_env_counts() -> None:
     )
 
     assert settings.yolo_device == "0"
-    assert settings.paddle_ocr_workers > 2
-    assert settings.page_preparation_batch_size >= 16
+    assert settings.paddle_ocr_workers == 2
+    assert settings.page_preparation_batch_size >= 8
 
 
 def test_apply_hardware_profile_can_be_disabled() -> None:
@@ -101,3 +126,10 @@ def test_apply_hardware_profile_can_be_disabled() -> None:
 
     assert settings.paddle_ocr_workers == 2
     assert settings.yolo_device == "cpu"
+
+
+def test_ocr_prepare_concurrency_follows_worker_pool() -> None:
+    settings = Settings(_env_file=None, paddle_ocr_workers=2)
+    engine = SimpleNamespace(config={"worker_count": 4})
+    assert ocr_prepare_concurrency(engine, settings) == 4
+    assert ocr_prepare_concurrency(SimpleNamespace(config={}), settings) == 2

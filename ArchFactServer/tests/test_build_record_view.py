@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from app.api.v1.extraction_jobs import build_record_view
+from app.application.views import build_record_view
 
 
 def test_build_record_view_tolerates_missing_created_at() -> None:

@@ -59,7 +59,26 @@ def detect_hardware() -> HardwareProfile:
     )
 
 
-def recommend_local_runtime(profile: HardwareProfile) -> RuntimeTune:
+def ocr_worker_cap(ocr_model: str | None) -> int:
+    """Heavy 3.x medium/server keeps 2 processes; v4/small/tiny can use 8.
+
+    Medium on CPU is memory-bandwidth bound. Four concurrent processes make
+    each page slower than the timeout, then workers restart and reload the
+    model. Two processes finish pages faster and keep the same model quality.
+    """
+    compact = "".join(char for char in (ocr_model or "").casefold() if char.isalnum())
+    if any(token in compact for token in ("tiny", "small", "mobile", "v4")):
+        return 8
+    if any(token in compact for token in ("medium", "server", "v5")):
+        return 2
+    return 8
+
+
+def recommend_local_runtime(
+    profile: HardwareProfile,
+    *,
+    ocr_model: str | None = None,
+) -> RuntimeTune:
     """Pick OCR process counts and a YOLO device that fit this machine.
 
     Detection thresholds stay unchanged so moving computers does not change
@@ -69,13 +88,17 @@ def recommend_local_runtime(profile: HardwareProfile) -> RuntimeTune:
     reserve = 2 if profile.cuda_available else 1
     usable_cores = max(2, profile.cpu_count - reserve)
     ram_workers = max(1, int((profile.memory_gb - 3.0) / 1.2))
-    cpu_workers = max(1, usable_cores // 2)
-    workers = min(8, ram_workers, cpu_workers)
+    worker_cap = ocr_worker_cap(ocr_model)
+    if worker_cap >= 8:
+        cpu_workers = max(1, usable_cores - 2)
+    else:
+        cpu_workers = max(1, usable_cores // 2)
+    workers = min(worker_cap, ram_workers, cpu_workers)
     threads = min(8, max(1, usable_cores // workers))
     if profile.cpu_count <= 4:
         threads = min(threads, 3)
-    discovery = min(8, workers)
-    batch = min(24, max(8, workers * 4))
+    discovery = min(4, workers)
+    batch = min(16, max(8, workers * 4))
     return RuntimeTune(
         yolo_device=_preferred_yolo_device(profile),
         paddle_ocr_workers=workers,
@@ -93,7 +116,7 @@ def apply_hardware_profile(
 
     global _applied_profile, _applied_tune
     profile = profile or detect_hardware()
-    tune = recommend_local_runtime(profile)
+    tune = recommend_local_runtime(profile, ocr_model=settings.paddle_ocr_model)
     yolo_device = resolve_yolo_device(
         settings.yolo_device,
         profile,

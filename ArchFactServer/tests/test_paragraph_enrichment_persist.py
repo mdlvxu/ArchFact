@@ -1,9 +1,9 @@
 import asyncio
 from typing import Any
 
-from app.api.v1.extraction_jobs import (
-    _record_card_fields_changed,
+from app.application.record_enrichment import (
     enrich_records_with_paragraph_fields,
+    record_card_fields_changed,
 )
 from app.services.result_fusion import ResultFusionService
 
@@ -24,8 +24,8 @@ def test_record_card_fields_changed_detects_morphology_upgrade() -> None:
         },
         "text_evidence": [{"quote": "M1：37、玉梳背。片状，倒梯形"}],
     }
-    assert _record_card_fields_changed(before, after) is True
-    assert _record_card_fields_changed(after, after) is False
+    assert record_card_fields_changed(before, after) is True
+    assert record_card_fields_changed(after, after) is False
 
 
 def test_enrich_records_persists_upgraded_morphology() -> None:

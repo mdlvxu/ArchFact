@@ -27,7 +27,7 @@ def _field_snapshot(fields: dict, key: str) -> tuple[str, str]:
     )
 
 
-def _record_card_fields_changed(before: dict, after: dict) -> bool:
+def record_card_fields_changed(before: dict, after: dict) -> bool:
     before_fields = before.get("fields", {}) if isinstance(before.get("fields"), dict) else {}
     after_fields = after.get("fields", {}) if isinstance(after.get("fields"), dict) else {}
     for key in _CARD_ENRICHMENT_FIELD_KEYS:
@@ -130,7 +130,7 @@ async def enrich_records_with_paragraph_fields(
         before = before_by_id.get(record_id)
         if before is None:
             continue
-        changed = _record_card_fields_changed(before, record)
+        changed = record_card_fields_changed(before, record)
         already_enriched = record.get("paragraph_enrichment_version") == enrichment_version
         if not changed and already_enriched:
             continue

@@ -524,6 +524,53 @@ def test_preprocessor_reuses_matching_render_and_ocr_cache(tmp_path: Path) -> No
     assert second.pages[0]["ocr_cache_hit"] is True
 
 
+def test_preprocessor_reuses_ocr_when_only_runtime_knobs_change(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "text-layer-cache-runtime.pdf"
+    create_pdf(pdf_path)
+    repository = FakeRepository()
+    settings = Settings(
+        app_env="test",
+        file_storage_root=tmp_path / "files-cache-runtime",
+        ocr_policy="all",
+    )
+    ocr = FakeOcrEngine()
+    preprocessor = PagePreprocessor(
+        settings=settings,
+        parser=PdfParser(settings),
+        repository=repository,  # type: ignore[arg-type]
+        image_storage=LocalImageStorage(settings),
+        ocr_engine=ocr,
+    )
+
+    first = asyncio.run(
+        preprocessor.prepare(
+            pdf_path=pdf_path,
+            document_id="doc_test",
+            selected_pages=[1],
+        )
+    )
+    first.pages[0]["ocr_config_hash"] = "e00598804e263fbf"
+    asyncio.run(repository.upsert_pages("doc_test", first.pages))
+
+    later = PagePreprocessor(
+        settings=settings,
+        parser=PdfParser(settings),
+        repository=repository,  # type: ignore[arg-type]
+        image_storage=LocalImageStorage(settings),
+        ocr_engine=ocr,
+    )
+    second = asyncio.run(
+        later.prepare(
+            pdf_path=pdf_path,
+            document_id="doc_test",
+            selected_pages=[1],
+        )
+    )
+
+    assert ocr.calls == 1
+    assert second.pages[0]["ocr_cache_hit"] is True
+
+
 class FailingSecondPageEngine(LocalTextExtractionEngine):
     async def extract(self, chunk: Any, config: Any) -> list[dict[str, Any]]:
         if chunk.page_no == 2:

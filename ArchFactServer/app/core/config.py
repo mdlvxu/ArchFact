@@ -81,10 +81,16 @@ class Settings(BaseSettings):
     paddle_ocr_worker_path: Path = Path("scripts/paddle_ocr_worker.py")
     paddle_ocr_language: str = "ch"
     paddle_ocr_use_angle_cls: bool = False
+    paddle_ocr_api_version: Literal["auto", "2", "3"] = "auto"
+    # Cache / provenance labels; bump when switching conda env or OCR model line.
+    paddle_ocr_model: str = "ch_PP-OCRv4"
+    paddle_ocr_version: str = "2.9"
     paddle_ocr_timeout_seconds: float = Field(default=180, gt=0, le=900)
+    paddle_ocr_max_side: int = Field(default=1600, ge=640, le=4096)
     paddle_ocr_workers: int = Field(default=2, ge=1, le=8)
     paddle_ocr_worker_threads: int = Field(default=6, ge=1, le=20)
     region_ocr_min_confidence: float = Field(default=0.5, ge=0, le=1)
+    region_ocr_timeout_seconds: float = Field(default=20, gt=0, le=120)
     region_crop_padding: float = Field(default=0.01, ge=0, le=0.1)
     yolo_adapter: Literal["disabled", "json", "ultralytics"] = "disabled"
     yolo_predictions_path: Path | None = None

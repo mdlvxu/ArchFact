@@ -1330,6 +1330,9 @@ onBeforeUnmount(() => {
       <ExtractionSettings
         v-model:selected-pages="selectedExtractionPages"
         :pages="pdfPages"
+        :running="jobRunning"
+        :stopping="stopped && jobRunning"
+        :progress="progress"
         @extract="startExtraction"
         @thumbnail-needed="renderThumbnail"
       />

@@ -11,6 +11,8 @@ __pycache__/
 *.env
 !.env.example
 models/**/*.pt
+models/paddleocr/**
+!models/paddleocr/README.md
 *.py[cod]
 *.log
 *.onnx

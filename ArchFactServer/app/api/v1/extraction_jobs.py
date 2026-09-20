@@ -3,12 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.api.dependencies import get_container
-from app.api.v1.extraction_records import get_record_evidence_context
-from app.application.record_enrichment import (
-    _record_card_fields_changed,
-    enrich_records_with_paragraph_fields,
-)
-from app.application.views import build_job_view, build_record_view
+from app.application.views import build_job_view
 from app.container import Container
 from app.models.schemas import (
     ApiResponse,
@@ -85,12 +80,3 @@ async def retry_failed_extraction_pages(
         message=f"已重新提交 {len(job.get('retry_pages', []))} 个失败页面",
         data=await build_job_view(container, job),
     )
-
-
-__all__ = [
-    "build_record_view",
-    "enrich_records_with_paragraph_fields",
-    "get_record_evidence_context",
-    "router",
-    "_record_card_fields_changed",
-]

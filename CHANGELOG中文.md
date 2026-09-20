@@ -2,6 +2,38 @@
 
 [English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
 
+## quality-baseline-v5 — 2026-09-20
+
+相对 `quality-baseline-v4`（2026-09-07）的主要修改与优化。
+
+### PaddleOCR 3.x 与 PP-OCRv6_small
+
+- 默认 OCR 为 PaddleOCR 3.7（`ppocr3`）+ `PP-OCRv6_small`；通过 BOS 下载到 `models/paddleocr`（权重仍不进 git）
+- 硬件自适应：small/tiny/v4 最多 8 个 OCR worker；medium/server/v5 上限仍为 2，避免 CPU 内存打满
+- Worker 就绪握手，模型加载不计入页面超时（默认 180 秒）；超时后将 `max_side` 从 1600 降到 960 重试
+- 页 OCR 缓存按 provider/model/version/text/blocks 命中；超时和 worker 数不再让缓存失效
+- 编号区域复用整页 OCR；剩余裁切并行识别，单区域超时 20 秒
+
+### 抽取稳健性与界面
+
+- LLM 截断 JSON 会修复或对半拆分（5054 / 5022），避免整页语义抽取失败
+- 任务运行或停止中禁用「开始提取」，并显示进度百分比
+
+### 发布布局与死代码
+
+- 根目录 `.gitignore` 白名单纳入启动脚本和双语更新日志
+- 删除未使用的前端模块（`DocumentSheet`、`ExtractionResults`、`api/modules/user`、`stores/app`）
+- 抽取路由不再二次导出 application 辅助函数；测试从 application/domain 直接导入
+- SETUP_WINDOWS 将 `ppocr3` + `PP-OCRv6_small` 写为推荐 OCR；2.9 仍可作为回退
+
+### 测试
+
+- 前端：`pnpm test:run` 83 通过、1 跳过
+- 后端：`pytest` 213 通过
+- 更新：OCR 就绪握手、内置模型目录、硬件 worker 上限、JSON 挽救等用例
+
+---
+
 ## quality-baseline-v4 — 2026-09-07
 
 相对 `quality-baseline-v3`（2026-08-13）的主要修改与优化。

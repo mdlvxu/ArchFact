@@ -2,6 +2,38 @@
 
 [English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
 
+## quality-baseline-v5 — 2026-09-20
+
+Main changes since `quality-baseline-v4` (2026-09-07).
+
+### PaddleOCR 3.x with PP-OCRv6_small
+
+- Default OCR is PaddleOCR 3.7 (`ppocr3`) plus `PP-OCRv6_small`; download via BOS into `models/paddleocr` (weights stay gitignored)
+- Hardware auto-tune: small/tiny/v4 can use up to 8 OCR workers; medium/server/v5 stay capped at 2 to avoid CPU OOM
+- Worker ready handshake so model load is not counted against the page timeout (default 180s); timeout retry downscales `max_side` 1600 → 960
+- Page OCR cache keys on provider/model/version/text/blocks; timeout and worker counts no longer bust the cache
+- Number regions reuse page OCR; leftover crop OCR runs in parallel with a 20s region timeout
+
+### Extraction robustness and UI
+
+- Truncated LLM JSON is repaired or bisected (5054 / 5022) instead of failing the whole page
+- The extract button stays disabled while a job is running or stopping and shows progress percent
+
+### Publish layout and dead code
+
+- Root `.gitignore` whitelist publishes launcher scripts and bilingual changelogs
+- Remove unused frontend modules (`DocumentSheet`, `ExtractionResults`, `api/modules/user`, `stores/app`)
+- Extraction routes no longer re-export application helpers; tests import from application/domain
+- SETUP_WINDOWS documents `ppocr3` + `PP-OCRv6_small` as the recommended OCR path; 2.9 remains a fallback
+
+### Tests
+
+- Frontend: `pnpm test:run` 83 passed, 1 skipped
+- Backend: `pytest` 213 passed
+- Updated coverage for OCR ready handshake, bundled model dirs, hardware worker caps, and JSON salvage
+
+---
+
 ## quality-baseline-v4 — 2026-09-07
 
 Main changes since `quality-baseline-v3` (2026-08-13).
