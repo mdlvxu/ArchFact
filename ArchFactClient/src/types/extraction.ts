@@ -4,6 +4,7 @@ export interface ExtractionTemplateField {
   type: LabelConstraintType
   required: boolean
   instruction?: string
+  defaultInstruction?: string
   evidence_kind?: SourceRegionKind | null
 }
 
@@ -48,6 +49,7 @@ export interface ExtractionFieldSpec {
   type: ExtractionFieldType
   required: boolean
   instruction?: string
+  defaultInstruction?: string
   evidence_kind?: SourceRegionKind | null
 }
 

@@ -62,7 +62,10 @@ let templateSaveTimer: number | undefined
 function cloneTemplate(template: ExtractionTemplate): ExtractionTemplate {
   return {
     ...template,
-    fields: template.fields.map((field) => ({ ...field })),
+    fields: template.fields.map((field) => ({
+      ...field,
+      defaultInstruction: field.defaultInstruction ?? (template.builtin ? field.instruction : undefined),
+    })),
   }
 }
 
@@ -241,12 +244,10 @@ onBeforeUnmount(() => {
           </span>
           <LabelConstraintSelector
             :label="localize(item.label)"
-            :model-value="item.type"
             :required="item.required"
             :instruction="item.instruction || ''"
-            @update:model-value="updateTemplateField(item.key, { type: $event })"
-            @update:required="updateTemplateField(item.key, { required: $event })"
-            @update:instruction="updateTemplateField(item.key, { instruction: $event })"
+            :default-instruction="item.defaultInstruction"
+            @update:instruction="updateTemplateField(item.key, { instruction: $event || undefined })"
           />
         </div>
       </div>
@@ -457,9 +458,6 @@ onBeforeUnmount(() => {
   align-items: center;
   min-width: 0;
   font-size: var(--af-font-body);
-}
-
-.constraint-row > span {
   overflow: hidden;
   color: #625c56;
   text-overflow: ellipsis;

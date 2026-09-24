@@ -52,6 +52,10 @@ http.interceptors.request.use((config) => {
 // 响应拦截器：统一处理 HTTP 状态码和业务错误码
 http.interceptors.response.use(
   (response: AxiosResponse<ApiResponse>) => {
+    // Binary downloads are intentionally not wrapped in the API JSON envelope.
+    if (response.config.responseType === 'blob') {
+      return response.data as unknown as AxiosResponse
+    }
     const { code, message, data } = response.data
 
     // 业务成功：直接返回 data 部分

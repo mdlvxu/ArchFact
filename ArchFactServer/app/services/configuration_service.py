@@ -3,11 +3,15 @@ from typing import Any
 from app.core.errors import DomainError
 from app.models.schemas import ExtractionTemplateDefinition, PostProcessingRuleDefinition
 from app.repositories.mongo_repository import MongoRepository
+from app.services.extraction_engine import OpenAICompatibleExtractionEngine
+
+
+DEFAULT_EXTRACTION_SYSTEM_PROMPT = OpenAICompatibleExtractionEngine._system_prompt()
 
 DEFAULT_TEMPLATES = [
     {
-        "id": "basic-research",
-        "name": "Basic Research Template",
+        "id": "latest-artifact-card",
+        "name": "Latest Artifact Card Template",
         "builtin": True,
         "fields": [
             {
@@ -88,6 +92,99 @@ DEFAULT_TEMPLATES = [
         ],
     },
     {
+        "id": "basic-research",
+        "name": "Basic Research Template",
+        "builtin": True,
+        "fields": [
+            {
+                "key": "site_id",
+                "label": "Site / Context ID",
+                "type": "string",
+                "instruction": (
+                    "提取每个器物号冒号前的字母、数字或符号，如 M3:4 中的 M3、"
+                    "H125:1 中的 H125；只保留遗迹号，不得包含冒号后的序号。"
+                ),
+                "evidence_kind": "number",
+            },
+            {
+                "key": "sequence_no",
+                "label": "Sequence Number",
+                "type": "string",
+                "instruction": (
+                    "提取每个器物号冒号后的序号，如 M3:4 中的 4；"
+                    "只保留序号本身，不得混入图号或图中序号。"
+                ),
+                "evidence_kind": "number",
+            },
+            {
+                "key": "measurements",
+                "label": "Measurements",
+                "type": "string",
+                "instruction": (
+                    "直接提取当前器物原句中的尺寸信息，不作推断或补充；"
+                    "如有多个数值，使用中文顿号“、”连接。"
+                ),
+                "evidence_kind": "text",
+            },
+            {
+                "key": "morphological_description",
+                "label": "Morphological Description",
+                "type": "string",
+                "instruction": "直接提取当前器物的外形描述原句，不进行总结、概括或补写。",
+                "evidence_kind": "text",
+            },
+            {
+                "key": "surface_color",
+                "label": "Surface Color",
+                "type": "string",
+                "instruction": "直接提取原文明示的颜色；不得根据黑白线图、器形或材质推断。",
+                "evidence_kind": "text",
+            },
+            {
+                "key": "artifact_type_1",
+                "label": "Artifact Type 1",
+                "type": "string",
+                "instruction": (
+                    "提取器物所属的大类，仅限玉器、陶器、石器、漆器等原文明示类别；"
+                    "不得将具体器名或材质填入此字段。"
+                ),
+                "evidence_kind": "text",
+            },
+            {
+                "key": "artifact_type_2",
+                "label": "Artifact Type 2",
+                "type": "string",
+                "instruction": (
+                    "提取器物号之前标注的具体器名，如罐、环、壶、鼎；"
+                    "原文未重复标注时，可在同一连续器物条目组内沿用上一件明确标注的器名，"
+                    "否则留空并标记 needs_review。"
+                ),
+                "evidence_kind": "text",
+            },
+            {
+                "key": "texture",
+                "label": "Texture",
+                "type": "string",
+                "instruction": "直接提取器物材质、质地或胎质；注意与颜色、器型严格区分。",
+                "evidence_kind": "text",
+            },
+            {
+                "key": "completeness",
+                "label": "Completeness",
+                "type": "string",
+                "instruction": "提取完整、残、残片、碎片、复原等原文明示信息；残碎器物也必须保留记录。",
+                "evidence_kind": "text",
+            },
+            {
+                "key": "figure_caption",
+                "label": "Figure Caption",
+                "type": "string",
+                "instruction": "直接提取器物信息末尾括号内的图注内容，不得改写、概括或补充。",
+                "evidence_kind": "caption",
+            },
+        ],
+    },
+    {
         "id": "typology-research",
         "name": "Typology Research Template",
         "builtin": True,
@@ -114,7 +211,7 @@ DEFAULT_TEMPLATES = [
             {"key": "context_id", "label": "Context ID", "type": "string"},
             {"key": "layer", "label": "Layer", "type": "string"},
             {"key": "unit", "label": "Unit", "type": "string"},
-            {"key": "depth", "label": "Depth", "type": "number"},
+            {"key": "depth", "label": "Depth", "type": "string"},
             {"key": "period", "label": "Period", "type": "string"},
             {"key": "relationship", "label": "Relationship", "type": "string"},
             {"key": "finds_summary", "label": "Finds Summary", "type": "string"},
@@ -200,10 +297,17 @@ class ConfigurationService:
 
     async def seed_defaults(self) -> None:
         default_templates = [
-            ExtractionTemplateDefinition.model_validate(item) for item in DEFAULT_TEMPLATES
+            self._with_default_instructions(ExtractionTemplateDefinition.model_validate(item))
+            for item in DEFAULT_TEMPLATES
         ]
         existing_templates = await self._repository.list_extraction_templates()
+        existing_by_id = {str(item.get("_id")): item for item in existing_templates}
+        self._promote_legacy_basic_template(existing_by_id)
         default_ids = {template.id for template in default_templates}
+        seeded_templates = [
+            self._merge_default_template(template, existing_by_id.get(template.id))
+            for template in default_templates
+        ]
         custom_templates = [
             ExtractionTemplateDefinition.model_validate(
                 {
@@ -216,7 +320,11 @@ class ConfigurationService:
             for item in existing_templates
             if item.get("_id") not in default_ids
         ]
-        await self.replace_templates([*default_templates, *custom_templates])
+        await self.replace_templates([*seeded_templates, *custom_templates])
+        if await self._repository.get_extraction_system_prompt() is None:
+            await self._repository.replace_extraction_system_prompt(
+                DEFAULT_EXTRACTION_SYSTEM_PROMPT
+            )
         if await self._repository.count_post_processing_rules() == 0:
             await self.replace_rules(
                 [PostProcessingRuleDefinition.model_validate(item) for item in DEFAULT_RULES]
@@ -224,6 +332,21 @@ class ConfigurationService:
 
     async def list_templates(self) -> list[dict[str, Any]]:
         return await self._repository.list_extraction_templates()
+
+    async def get_system_prompt(self) -> dict[str, str]:
+        saved = await self._repository.get_extraction_system_prompt()
+        content = str((saved or {}).get("content") or DEFAULT_EXTRACTION_SYSTEM_PROMPT).strip()
+        return {
+            "content": content,
+            "default_content": DEFAULT_EXTRACTION_SYSTEM_PROMPT,
+        }
+
+    async def replace_system_prompt(self, content: str) -> dict[str, str]:
+        normalized = content.strip()
+        if not normalized:
+            raise DomainError("公共提示词不能为空", code=4092, status_code=422)
+        await self._repository.replace_extraction_system_prompt(normalized)
+        return await self.get_system_prompt()
 
     async def replace_templates(
         self, templates: list[ExtractionTemplateDefinition]
@@ -248,6 +371,90 @@ class ConfigurationService:
         return await self.list_rules()
 
     @staticmethod
+    def _promote_legacy_basic_template(existing_by_id: dict[str, dict[str, Any]]) -> None:
+        """Preserve the old production configuration before resetting the baseline schema.
+
+        The migration is intentionally gated by the absence of the new template id.  It
+        therefore runs once for an existing installation, while fresh installations
+        simply receive both built-in templates from ``DEFAULT_TEMPLATES``.
+        """
+
+        latest_id = "latest-artifact-card"
+        legacy_id = "basic-research"
+        legacy = existing_by_id.get(legacy_id)
+        if latest_id in existing_by_id or legacy is None:
+            return
+
+        existing_by_id[latest_id] = {
+            **legacy,
+            "_id": latest_id,
+            "name": "Latest Artifact Card Template",
+            "builtin": True,
+        }
+        # Do not merge the old eight-field production schema into the new baseline.
+        existing_by_id.pop(legacy_id, None)
+
+    @staticmethod
     def _ensure_unique(values: list[str], label: str) -> None:
         if len(values) != len(set(values)):
             raise DomainError(f"{label} 不能重复", code=4091, status_code=409)
+
+    @staticmethod
+    def _with_default_instructions(
+        template: ExtractionTemplateDefinition,
+    ) -> ExtractionTemplateDefinition:
+        return template.model_copy(
+            update={
+                "fields": [
+                    field.model_copy(
+                        update={"default_instruction": field.instruction}
+                    )
+                    for field in template.fields
+                ]
+            }
+        )
+
+    @staticmethod
+    def _merge_default_template(
+        default: ExtractionTemplateDefinition,
+        existing: dict[str, Any] | None,
+    ) -> ExtractionTemplateDefinition:
+        """Refresh built-in fields without erasing a user's saved instructions."""
+
+        if existing is None:
+            return default
+        saved = ExtractionTemplateDefinition.model_validate(
+            {
+                "id": existing.get("_id", default.id),
+                "name": existing.get("name", default.name),
+                "fields": existing.get("fields", []),
+                "builtin": existing.get("builtin", True),
+            }
+        )
+        saved_by_key = {field.key: field for field in saved.fields}
+        merged_fields = []
+        for default_field in default.fields:
+            saved_field = saved_by_key.pop(default_field.key, None)
+            if saved_field is None:
+                merged_fields.append(default_field)
+                continue
+            merged_fields.append(
+                default_field.model_copy(
+                    update={
+                        # All built-in extraction fields use a text contract. The
+                        # field key and its prompt carry semantic meaning; values
+                        # such as dimensions remain text instead of numeric arrays.
+                        "type": default_field.type,
+                        "required": saved_field.required,
+                        "instruction": (
+                            saved_field.instruction
+                            if saved_field.instruction is not None
+                            else default_field.instruction
+                        ),
+                        "evidence_kind": saved_field.evidence_kind or default_field.evidence_kind,
+                    }
+                )
+            )
+        # Preserve any legacy/user-added fields on an existing built-in template.
+        merged_fields.extend(saved_by_key.values())
+        return default.model_copy(update={"fields": merged_fields})

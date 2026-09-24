@@ -1,4 +1,4 @@
-import { get, patch, post, put } from '@/api/http'
+import http, { get, patch, post, put } from '@/api/http'
 import { constraintTypeMap, fieldTypeMap } from '@/domain/extraction-config'
 import { pdfUploadTimeoutMs } from '@/domain/pdf-import'
 import type {
@@ -20,10 +20,12 @@ import type {
 } from '@/types/extraction'
 import type {
   AiVerificationRun,
+  MachineVerificationRun,
   VerificationCompleteResult,
   VerificationFailureCode,
   VerificationRule,
   VerificationSession,
+  VerificationExperiment,
   VerificationVersionSnapshot,
 } from '@/types/verification'
 import type { GoldDataset, QualityEvaluationRun } from '@/types/quality-evaluation'
@@ -57,6 +59,7 @@ interface BackendExtractionTemplate {
     type: ExtractionFieldType
     required: boolean
     instruction?: string
+    default_instruction?: string
     evidence_kind?: SourceRegionKind | null
   }>
   builtin: boolean
@@ -83,8 +86,9 @@ function fromBackendTemplate(template: BackendExtractionTemplate): ExtractionTem
   return {
     id: template.id,
     name: template.name,
-    fields: template.fields.map((field) => ({
+    fields: template.fields.map(({ default_instruction, ...field }) => ({
       ...field,
+      defaultInstruction: default_instruction,
       type: constraintTypeMap[field.type],
     })),
     builtin: template.builtin,
@@ -96,8 +100,9 @@ function toBackendTemplate(template: ExtractionTemplate): BackendExtractionTempl
   return {
     id: template.id,
     name: template.name,
-    fields: template.fields.map((field) => ({
+    fields: template.fields.map(({ defaultInstruction, ...field }) => ({
       ...field,
+      default_instruction: defaultInstruction,
       type: fieldTypeMap[field.type],
     })),
     builtin: template.builtin ?? false,
@@ -135,6 +140,38 @@ export async function replaceExtractionTemplates(
     templates.map(toBackendTemplate),
   )
   return saved.map(fromBackendTemplate)
+}
+
+export interface ExtractionPromptPreview {
+  template_id: string
+  template_name: string
+  composed_prompt: string
+  complete_prompt: string
+  estimated_tokens: number
+  dynamic_content_note: string
+}
+
+export interface ExtractionSystemPrompt {
+  content: string
+  default_content: string
+}
+
+export function getExtractionSystemPrompt(): Promise<ExtractionSystemPrompt> {
+  return get<ExtractionSystemPrompt>('/v1/extraction-system-prompt')
+}
+
+export function replaceExtractionSystemPrompt(
+  content: string,
+): Promise<ExtractionSystemPrompt> {
+  return put<ExtractionSystemPrompt>('/v1/extraction-system-prompt', { content })
+}
+
+export function previewExtractionPrompt(
+  template: ExtractionTemplate,
+): Promise<ExtractionPromptPreview> {
+  return post<ExtractionPromptPreview>('/v1/extraction-prompt-preview', {
+    template: toBackendTemplate(template),
+  })
 }
 
 export function getPostProcessingRules(): Promise<PostProcessingRule[]> {
@@ -363,6 +400,88 @@ export function createVerificationSession(
   )
 }
 
+export function startMachineVerificationRun(
+  jobId: string,
+  rules: VerificationRule[],
+  sampleSize = 18,
+  assertionBaselineId: 'v1' | 'v2' = 'v1',
+): Promise<MachineVerificationRun> {
+  return post<MachineVerificationRun>(
+    `/v1/extraction-jobs/${jobId}/machine-verification-runs`,
+    {
+      rules: rules.map(({ id, title, description, enabled }) => ({
+        id,
+        title,
+        description,
+        enabled,
+      })),
+      sample_size: sampleSize,
+      assertion_baseline_id: assertionBaselineId,
+    },
+    { timeout: 60_000 },
+  )
+}
+
+export function getActiveVerificationExperiment(jobId: string): Promise<VerificationExperiment> {
+  return get<VerificationExperiment>(`/v1/extraction-jobs/${jobId}/verification-experiments/active`)
+}
+
+export function getVerificationExperiments(jobId: string): Promise<VerificationExperiment[]> {
+  return get<VerificationExperiment[]>(`/v1/extraction-jobs/${jobId}/verification-experiments`)
+}
+
+export function createVerificationExperiment(jobId: string): Promise<VerificationExperiment> {
+  return post<VerificationExperiment>(`/v1/extraction-jobs/${jobId}/verification-experiments`)
+}
+
+export function resetInvalidVerificationV1(jobId: string): Promise<void> {
+  return post<void>(`/v1/extraction-jobs/${jobId}/verification-experiments/active/reset-invalid-v1`)
+}
+
+export function getMachineVerificationRun(
+  jobId: string,
+  runId: string,
+): Promise<MachineVerificationRun> {
+  return get<MachineVerificationRun>(
+    `/v1/extraction-jobs/${jobId}/machine-verification-runs/${runId}`,
+  )
+}
+
+export function getActiveMachineVerificationRun(
+  jobId: string,
+): Promise<MachineVerificationRun | null> {
+  return get<MachineVerificationRun | null>(
+    `/v1/extraction-jobs/${jobId}/machine-verification-runs/active`,
+  )
+}
+
+export function pauseMachineVerificationRun(
+  jobId: string,
+  runId: string,
+): Promise<MachineVerificationRun> {
+  return post<MachineVerificationRun>(
+    `/v1/extraction-jobs/${jobId}/machine-verification-runs/${runId}/pause`,
+  )
+}
+
+export function resumeMachineVerificationRun(
+  jobId: string,
+  runId: string,
+): Promise<MachineVerificationRun> {
+  return post<MachineVerificationRun>(
+    `/v1/extraction-jobs/${jobId}/machine-verification-runs/${runId}/resume`,
+  )
+}
+
+export function terminateMachineVerificationRun(
+  jobId: string,
+  runId: string,
+): Promise<MachineVerificationRun> {
+  return post<MachineVerificationRun>(
+    `/v1/extraction-jobs/${jobId}/machine-verification-runs/${runId}/terminate`,
+  )
+}
+
 export function getActiveVerificationSession(
   jobId: string,
   options?: { suppressErrorMessage?: boolean },
@@ -422,9 +541,23 @@ export function getAiVerificationRun(jobId: string, runId: string): Promise<AiVe
   return get<AiVerificationRun>(`/v1/extraction-jobs/${jobId}/ai-verification-runs/${runId}`)
 }
 
-export function getVerificationVersions(jobId: string): Promise<VerificationVersionSnapshot[]> {
+export function getVerificationVersions(
+  jobId: string,
+  options?: { experimentId?: string },
+): Promise<VerificationVersionSnapshot[]> {
   return get<VerificationVersionSnapshot[]>(
     `/v1/extraction-jobs/${jobId}/verification-versions`,
+    { params: options?.experimentId ? { experiment_id: options.experimentId } : undefined },
+  )
+}
+
+export function downloadFullMachineVerificationExcel(
+  jobId: string,
+  versionId: string,
+): Promise<Blob> {
+  return http.get<Blob, Blob>(
+    `/v1/extraction-jobs/${jobId}/verification-versions/${versionId}/machine-details.xlsx`,
+    { responseType: 'blob', timeout: 120_000 },
   )
 }
 

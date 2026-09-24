@@ -139,9 +139,11 @@ function New-ServiceState {
 
 function Save-State {
     $state = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         projectRoot = $ProjectRoot
         startedAt = [DateTime]::UtcNow.ToString('o')
+        bootMarker = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).
+            LastBootUpTime.ToUniversalTime().ToString('o')
         services = $services
     }
     $state | ConvertTo-Json -Depth 6 | Set-Content -Path $StatePath -Encoding UTF8

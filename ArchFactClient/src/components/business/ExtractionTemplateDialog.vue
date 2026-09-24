@@ -2,6 +2,8 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { createFieldKey } from '@/domain/extraction-config'
 import { useI18n } from '@/i18n'
+import ExtractionSystemPromptEditor from '@/components/business/ExtractionSystemPromptEditor.vue'
+import TemplatePromptPreview from '@/components/business/TemplatePromptPreview.vue'
 import type { ExtractionTemplate } from '@/types/extraction'
 
 interface Props {
@@ -24,6 +26,7 @@ const newTemplateName = ref('')
 const newLabel = ref('')
 const newLabels = ref<string[]>([])
 const formError = ref('')
+const systemPromptRevision = ref(0)
 
 const selectedTemplate = computed(
   () => props.templates.find((template) => template.id === selectedId.value) ?? props.templates[0],
@@ -175,6 +178,14 @@ watch(
             </div>
           </section>
 
+          <ExtractionSystemPromptEditor @saved="systemPromptRevision += 1" />
+
+          <TemplatePromptPreview
+            :template="selectedTemplate"
+            :templates="templates"
+            :system-prompt-revision="systemPromptRevision"
+          />
+
           <section class="new-template-card">
             <div class="new-template-title">
               <h3>{{ t('template.new') }}</h3>
@@ -242,7 +253,7 @@ watch(
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: 16px;
   overflow-y: auto;
   background: rgb(38 31 25 / 30%);
   backdrop-filter: blur(3px);
@@ -250,9 +261,9 @@ watch(
 }
 
 .template-dialog-card {
-  width: min(760px, 100%);
-  max-height: calc(100vh - 48px);
-  padding: 28px 30px 22px;
+  width: min(980px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 30px 36px 22px;
   overflow-y: auto;
   color: #443930;
   background:
@@ -273,7 +284,9 @@ watch(
   gap: 20px;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 22px;
+  padding-bottom: 18px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #eee0d3;
 }
 
 .template-dialog-header span {
@@ -310,15 +323,15 @@ watch(
 
 .template-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   gap: 14px;
-  margin-bottom: 14px;
+  margin-bottom: 18px;
 }
 
 .template-tabs button {
   min-width: 0;
-  min-height: 60px;
-  padding: 9px;
+  min-height: 62px;
+  padding: 10px 12px;
   font-size: 14px;
   line-height: 1.2;
   color: #a85f2b;
@@ -345,7 +358,7 @@ watch(
 
 .selected-template-card,
 .new-template-card {
-  padding: 16px;
+  padding: 17px 18px;
   background: rgb(255 255 255 / 76%);
   border: 1px solid #eadfd4;
   border-radius: 9px;
@@ -353,7 +366,7 @@ watch(
 }
 
 .selected-template-card {
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .selected-template-title,
@@ -383,11 +396,11 @@ watch(
 .draft-labels {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 12px;
+  gap: 9px 10px;
 }
 
 .selected-labels > span {
-  padding: 8px 10px;
+  padding: 8px 11px;
   font-size: 13px;
   color: #5f4e40;
   background: #fbe0b3;
@@ -482,7 +495,7 @@ watch(
 }
 
 .dialog-hint {
-  margin-top: 12px;
+  margin-top: 14px;
   font-size: 10px;
   color: #ab9d91;
   text-align: center;
@@ -508,7 +521,7 @@ watch(
   transform: translateY(12px) scale(0.98);
 }
 
-@media (max-width: 720px) {
+@media (max-width: 760px) {
   .template-dialog-backdrop {
     padding: 10px;
   }
@@ -519,7 +532,7 @@ watch(
   }
 
   .template-tabs {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
   }
 

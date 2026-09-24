@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from app.models.schemas import (
@@ -9,11 +9,13 @@ from app.models.schemas import (
     ExtractionJobView,
     ExtractionRecordView,
     JobEventView,
+    MachineVerificationRunView,
     RecordRevisionView,
     RegionRelationView,
     RelationRevisionView,
     RematchRunView,
     SourceRegionView,
+    VerificationExperimentView,
     VerificationSessionView,
     VerificationVersionView,
 )
@@ -28,7 +30,7 @@ def _coerce_record_timestamp(record: dict[str, Any], *keys: str) -> datetime:
         value = record.get(key)
         if isinstance(value, datetime):
             return value
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def build_record_view(record: dict, *, compact: bool = False) -> ExtractionRecordView:
@@ -192,6 +194,8 @@ def build_verification_session_view(session: dict) -> VerificationSessionView:
     return VerificationSessionView(
         id=session["_id"],
         job_id=session["job_id"],
+        experiment_id=session.get("experiment_id", "legacy"),
+        experiment_name=session.get("experiment_name", "历史校验"),
         cohort_id=session["cohort_id"],
         target_version=session["target_version"],
         status=session["status"],
@@ -203,6 +207,9 @@ def build_verification_session_view(session: dict) -> VerificationSessionView:
         ai_run_id=session.get("ai_run_id"),
         gold_dataset_id=session.get("gold_dataset_id"),
         matching_version_id=session.get("matching_version_id", "M0"),
+        machine_run_id=session.get("machine_run_id"),
+        assertion_baseline_id=session.get("assertion_baseline", {}).get("id", "v1"),
+        assertion_baseline_name=session.get("assertion_baseline", {}).get("name", "LLM 断言 V1"),
         created_at=session["created_at"],
         updated_at=session["updated_at"],
         completed_at=session.get("completed_at"),
@@ -213,6 +220,8 @@ def build_verification_version_view(version: dict) -> VerificationVersionView:
     return VerificationVersionView(
         id=version["_id"],
         job_id=version["job_id"],
+        experiment_id=version.get("experiment_id", "legacy"),
+        experiment_name=version.get("experiment_name", "历史校验"),
         cohort_id=version["cohort_id"],
         version=version["version"],
         parent_version_id=version.get("parent_version_id"),
@@ -223,6 +232,9 @@ def build_verification_version_view(version: dict) -> VerificationVersionView:
         ai_run_id=version.get("ai_run_id"),
         gold_dataset_id=version.get("gold_dataset_id"),
         gold_dataset_version=version.get("gold_dataset_version"),
+        calibration_profile=version.get("calibration_profile"),
+        assertion_baseline_id=version.get("assertion_baseline", {}).get("id", "v1"),
+        assertion_baseline_name=version.get("assertion_baseline", {}).get("name", "LLM 断言 V1"),
         created_at=version["created_at"],
     )
 
@@ -243,6 +255,47 @@ def build_ai_verification_run_view(run: dict) -> AiVerificationRunView:
         created_at=run["created_at"],
         updated_at=run["updated_at"],
         completed_at=run.get("completed_at"),
+    )
+
+
+def build_machine_verification_run_view(run: dict) -> MachineVerificationRunView:
+    return MachineVerificationRunView(
+        id=run["_id"],
+        job_id=run["job_id"],
+        experiment_id=run.get("experiment_id", "legacy"),
+        experiment_name=run.get("experiment_name", "历史校验"),
+        mode=run.get("mode", "initial"),
+        status=run["status"],
+        progress=run.get("progress", {}),
+        rules=run.get("rules", []),
+        assertion_baseline_id=run.get("assertion_baseline", {}).get("id", "v1"),
+        assertion_baseline_name=run.get("assertion_baseline", {}).get("name", "LLM 断言 V1"),
+        sample_size=run.get("sample_size", 18),
+        total_artifacts=run.get("total_artifacts", 0),
+        pass_count=run.get("pass_count", 0),
+        fail_count=run.get("fail_count", 0),
+        uncertain_count=run.get("uncertain_count", 0),
+        model_unavailable_count=run.get("model_unavailable_count", 0),
+        model_unavailable_reason=run.get("model_unavailable_reason"),
+        session_id=run.get("session_id"),
+        version_id=run.get("version_id"),
+        error=run.get("error"),
+        created_at=run["created_at"],
+        updated_at=run["updated_at"],
+        completed_at=run.get("completed_at"),
+    )
+
+
+def build_verification_experiment_view(experiment: dict) -> VerificationExperimentView:
+    return VerificationExperimentView(
+        id=experiment["_id"],
+        job_id=experiment["job_id"],
+        name=experiment.get("name", "历史校验"),
+        sequence=experiment.get("sequence", 0),
+        status=experiment.get("status", "legacy"),
+        matching_version_id=experiment.get("matching_version_id", "M0"),
+        artifact_count=experiment.get("artifact_count", 0),
+        created_at=experiment["created_at"],
     )
 
 

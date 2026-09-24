@@ -210,18 +210,6 @@ class RematchService:
                 regions=regions,
             )
             records = entity_output.records
-            records = self._result_fusion.discard_unbound_sparse_catalog_records(
-                records=records,
-                regions=regions,
-                relations=relations,
-            )
-            entity_output = self._entity_linker.link(
-                job_id=job_id,
-                document_id=str(job["document_id"]),
-                records=records,
-                regions=regions,
-            )
-            records = entity_output.records
             entities = entity_output.entities
             report = self._build_report(
                 baseline_relations=relations_raw,

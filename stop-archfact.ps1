@@ -45,7 +45,7 @@ function Get-ServiceState {
     return $property.Value
 }
 
-function Stop-ProcessTree {
+function Stop-TrackedProcess {
     param([int]$ProcessId)
 
     $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
@@ -53,18 +53,74 @@ function Stop-ProcessTree {
         return
     }
 
-    try {
-        $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" `
-            -ErrorAction Stop
-        foreach ($child in $children) {
-            Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
+    # The launcher stores both the parent and listening process IDs.  Ending
+    # only these confirmed processes is safer than recursively walking a
+    # Windows process tree, which may contain unrelated child processes.
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+
+function Get-SystemBootMarker {
+    return (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).
+        LastBootUpTime.ToUniversalTime().ToString('o')
+}
+
+function Test-ProcessDescendsFrom {
+    param(
+        [int]$ProcessId,
+        [int]$AncestorProcessId
+    )
+
+    $currentProcessId = $ProcessId
+    for ($depth = 0; $depth -lt 12; $depth++) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $currentProcessId" `
+            -ErrorAction SilentlyContinue
+        if ($null -eq $process) {
+            return $false
         }
+
+        $parentProcessId = [int]$process.ParentProcessId
+        if ($parentProcessId -eq $AncestorProcessId) {
+            return $true
+        }
+        if ($parentProcessId -le 0 -or $parentProcessId -eq $currentProcessId) {
+            return $false
+        }
+        $currentProcessId = $parentProcessId
     }
-    catch {
-        # The listener PID stored in the state file is stopped separately below.
+    return $false
+}
+
+function Test-TrackedProcessIdentity {
+    param(
+        [int]$ProcessId,
+        [object]$Service
+    )
+
+    # PIDs can be reused after a Windows restart.  Only stop a process when its
+    # executable or command line still points back to this ArchFact checkout.
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" `
+        -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        return $false
     }
 
-    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    $commandLine = [string]$process.CommandLine
+    $executablePath = [string]$process.ExecutablePath
+    $hasProjectIdentity = $commandLine.StartsWith($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $commandLine.IndexOf($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        $executablePath.StartsWith($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    if ($hasProjectIdentity) {
+        return $true
+    }
+
+    # Uvicorn reload workers can listen on 8080 with a multiprocessing command
+    # line that does not include the project path.  The listener PID is safe to
+    # stop only when it is a descendant of the launcher PID recorded in this
+    # same Windows session.
+    $listenerPid = if ($null -ne $Service.listenerPid) { [int]$Service.listenerPid } else { 0 }
+    $launcherPid = if ($null -ne $Service.launcherPid) { [int]$Service.launcherPid } else { 0 }
+    return $ProcessId -eq $listenerPid -and $launcherPid -gt 0 -and
+        (Test-ProcessDescendsFrom -ProcessId $ProcessId -AncestorProcessId $launcherPid)
 }
 
 function Stop-TrackedService {
@@ -84,7 +140,17 @@ function Stop-TrackedService {
         Where-Object { $null -ne $_ } |
         Select-Object -Unique
     foreach ($candidateId in $candidateIds) {
-        Stop-ProcessTree -ProcessId ([int]$candidateId)
+        $currentProcess = Get-Process -Id ([int]$candidateId) -ErrorAction SilentlyContinue
+        if ($null -eq $currentProcess) {
+            # The launcher process may have already shut down its listener.
+            continue
+        }
+        if (Test-TrackedProcessIdentity -ProcessId ([int]$candidateId) -Service $Service) {
+            Stop-TrackedProcess -ProcessId ([int]$candidateId)
+        }
+        elseif (-not $Quiet) {
+            Write-Warning "$Name PID $candidateId no longer belongs to this ArchFact checkout; it was not stopped."
+        }
     }
     if (-not $Quiet) {
         Write-Host "$Name stopped."
@@ -105,6 +171,22 @@ try {
 catch {
     Write-Error "Could not read $StatePath. No process was stopped."
     exit 1
+}
+
+try {
+    $currentBootMarker = Get-SystemBootMarker
+}
+catch {
+    Write-Error "Could not verify the current Windows session. No process was stopped."
+    exit 1
+}
+
+if (-not $state.bootMarker -or $state.bootMarker -ne $currentBootMarker) {
+    if (-not $Quiet) {
+        Write-Warning 'The launcher state belongs to an earlier Windows session. No process was stopped.'
+    }
+    Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue
+    exit 0
 }
 
 $frontend = Get-ServiceState -State $state -Name 'frontend'

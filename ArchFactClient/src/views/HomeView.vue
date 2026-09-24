@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Upload } from '@element-plus/icons-vue'
+import { ArrowDown, Upload } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist'
@@ -44,6 +44,7 @@ import {
   buildPreviewAnnotations,
   ensureSelectedPrimaryArtifactAnnotation,
 } from '@/domain/preview-annotations'
+import { hasArtifactCropBinding } from '@/domain/preview-card-visibility'
 import { resolvePreviewDocumentPage } from '@/domain/preview-document-page'
 import { filterExtractedPdfPages } from '@/domain/preview-pages'
 import { getDefaultExtractionPages } from '@/domain/page-selection'
@@ -256,6 +257,28 @@ const evidenceContextAnnotations = computed<PreviewAnnotation[]>(() => {
   )
 })
 
+/**
+ * The catalog is a stable document-level list. A card is created only when a
+ * detected artifact crop is linked anywhere in the document; page navigation
+ * and selecting one card must never hide its siblings.
+ */
+const previewCatalogCardRecords = computed(() => {
+  const sourceRecords =
+    previewMode.value === 'verify' ? verificationRecords.value : extractionRecords.value
+  const cropBoundEntityIds = new Set(
+    sourceRecords
+      .filter(hasArtifactCropBinding)
+      .map((record) => record.entity_id)
+      .filter((entityId): entityId is string => Boolean(entityId)),
+  )
+
+  return previewCatalogRecords.value.filter(
+    (record) =>
+      hasArtifactCropBinding(record) ||
+      Boolean(record.entity_id && cropBoundEntityIds.has(record.entity_id)),
+  )
+})
+
 const previewRegions = computed(
   () => recordEvidenceContext.value?.regions ?? pageAnnotationData.value?.regions ?? [],
 )
@@ -299,7 +322,11 @@ function changeTab(tab: WorkspaceTab) {
 }
 
 /** 调用第三页工作区导出当前机器校验结果。 */
-function exportVerificationResult() {
+function exportVerificationResult(kind: 'snapshot' | 'full-details' = 'snapshot') {
+  if (kind === 'full-details') {
+    void machineVerificationRef.value?.exportFullMachineDetails()
+    return
+  }
   machineVerificationRef.value?.exportResult()
 }
 
@@ -354,6 +381,44 @@ function applyJobState(job: ExtractionJob) {
     status: event.level,
     text: event.message,
   }))
+}
+
+/**
+ * 被停止的任务也可能已经写入部分器物卡片。恢复这些结果时，不能只因任务
+ * 没有走到 completed 而把用户留在空白预览页。
+ */
+async function loadStoppedJobResult(job: ExtractionJob): Promise<number> {
+  if (!pdfPages.value.length && job.document_id) {
+    try {
+      await hydrateJobDocumentPages(job)
+    } catch {
+      // 页面缩略图失败不应妨碍已保存卡片的恢复。
+    }
+  }
+
+  try {
+    extractionRecords.value = await getExtractionRecords(job.id)
+  } catch (recordsError: unknown) {
+    extractionRecords.value = []
+    ElMessage.warning(
+      recordsError instanceof Error ? recordsError.message : t('home.progressFailed'),
+    )
+  }
+
+  if (extractionRecords.value.length > 0) {
+    previewMode.value = 'browse'
+    verificationSession.value = null
+    verificationRecords.value = []
+    previewSelectedPage.value = null
+    activeAnnotationId.value = ''
+    selectedRecordId.value = ''
+    pageAnnotationData.value = null
+    recordEvidenceContext.value = null
+    ++evidenceContextRequestId
+    activeTab.value = 'Data Preview'
+  }
+
+  return extractionRecords.value.length
 }
 
 async function pollExtractionJob(jobId: string) {
@@ -411,7 +476,13 @@ async function pollExtractionJob(jobId: string) {
     }
     if (job.status === 'cancelled') {
       jobRunning.value = false
-      ElMessage.info(t('home.cancelled'))
+      const recordCount = await loadStoppedJobResult(job)
+      ElMessage.info(recordCount > 0
+        ? t('home.cancelledWithSavedRecords', { count: recordCount })
+        : t('home.cancelledBeforeCards', {
+          current: job.progress.current,
+          total: job.progress.total,
+        }))
       return
     }
     jobPollTimer = globalThis.setTimeout(() => void pollExtractionJob(jobId), 1200)
@@ -743,7 +814,6 @@ async function selectCatalogRecord(record: ExtractionRecord, preferredAnnotation
   selectedRecordId.value = record.id
   catalogDetailsOpen.value = true
   activeAnnotationId.value = preferredAnnotationId
-  pageAnnotationData.value = null
   try {
     const context = await getRecordEvidenceContext(currentJobId.value, record.id)
     if (requestId !== evidenceContextRequestId || selectedRecordId.value !== record.id) return
@@ -757,6 +827,10 @@ async function selectCatalogRecord(record: ExtractionRecord, preferredAnnotation
     previewSelectedPage.value = textPage
     activePage.value = textPage
     void renderSelectedPage(textPage)
+    // Keep the page-wide card collection available after switching to the
+    // selected record's evidence context. This data is deliberately separate
+    // from the single-record context used by the center preview.
+    void loadPageAnnotations(textPage)
   } catch (error: unknown) {
     if (requestId !== evidenceContextRequestId) return
     recordEvidenceContext.value = null
@@ -1129,6 +1203,11 @@ async function restoreLatestExtractionResult() {
     }
     applyJobState(job)
 
+    if (job.status === 'cancelled') {
+      await loadStoppedJobResult(job)
+      return
+    }
+
     if (job.status !== 'completed' && job.status !== 'completed_with_warnings') {
       if (job.document_id) {
         try {
@@ -1271,14 +1350,22 @@ onBeforeUnmount(() => {
             · {{ t('nav.verificationRemaining', { count: verificationRemaining }) }}
           </template>
         </el-button>
-        <el-button
+        <el-dropdown
           v-else-if="activeTab === 'Machine Verification'"
-          class="output-button"
-          plain
-          @click="exportVerificationResult"
+          trigger="click"
+          @command="exportVerificationResult"
         >
-          {{ t('nav.output') }}
-        </el-button>
+          <el-button class="output-button" plain>
+            <span class="output-button__label">{{ t('nav.output') }}</span>
+            <el-icon class="output-button__chevron" aria-hidden="true"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="snapshot">{{ t('nav.exportSnapshot') }}</el-dropdown-item>
+              <el-dropdown-item command="full-details">{{ t('nav.exportMachineDetails') }}</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
       <input
         ref="fileInputRef"
@@ -1392,7 +1479,7 @@ onBeforeUnmount(() => {
       </div>
 
       <ArchaeologicalCatalogs
-        :records="previewCatalogRecords"
+        :records="previewCatalogCardRecords"
         :pages="extractedPdfPages"
         :selected-page="previewSelectedPage"
         :selected-record-id="selectedRecordId"
@@ -1518,7 +1605,28 @@ onBeforeUnmount(() => {
   box-shadow: 0 2px 5px rgb(86 59 36 / 8%);
 }
 
-.output-button { width: 126px; }
+.output-button {
+  width: 126px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.output-button__label { line-height: 1; }
+
+.output-button__chevron {
+  width: 13px;
+  height: 13px;
+  margin-top: 1px;
+  color: #aa835f;
+  transition: color .16s ease, transform .16s ease;
+}
+
+.output-button:hover .output-button__chevron {
+  color: #8d5d36;
+  transform: translateY(1px);
+}
 
 .done-button {
   width: auto;

@@ -216,9 +216,10 @@ class MongoDatabase:
                 IndexModel([("created_at", DESCENDING)]),
             ]
         )
-        await self.database.verification_cohorts.create_indexes(
-            [IndexModel([("job_id", ASCENDING)], unique=True)]
-        )
+        # A job may contain several independent assertion experiments (E1, E2, ...).
+        # Each experiment owns one fixed human-review cohort, rather than sharing one
+        # job-wide cohort left over from the pre-experiment design.
+        await self._ensure_verification_cohort_experiment_index()
         await self.database.verification_sessions.create_indexes(
             [
                 IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
@@ -226,18 +227,26 @@ class MongoDatabase:
             ]
         )
         await self._ensure_unique_active_verification_session_index()
-        await self.database.verification_versions.create_indexes(
-            [
-                IndexModel(
-                    [("job_id", ASCENDING), ("version", ASCENDING)],
-                    unique=True,
-                )
-            ]
-        )
+        await self._ensure_verification_version_experiment_index()
         await self.database.ai_verification_runs.create_indexes(
             [
                 IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
                 IndexModel([("session_id", ASCENDING), ("status", ASCENDING)]),
+            ]
+        )
+        await self.database.machine_verification_runs.create_indexes(
+            [
+                IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
+                IndexModel([("job_id", ASCENDING), ("status", ASCENDING)]),
+            ]
+        )
+        await self.database.machine_verification_items.create_indexes(
+            [
+                IndexModel(
+                    [("run_id", ASCENDING), ("record_id", ASCENDING)],
+                    unique=True,
+                ),
+                IndexModel([("job_id", ASCENDING), ("verdict", ASCENDING)]),
             ]
         )
         await self.database.gold_datasets.create_indexes(
@@ -344,6 +353,44 @@ class MongoDatabase:
             )
         except OperationFailure:
             return
+
+    async def _ensure_verification_cohort_experiment_index(self) -> None:
+        collection = self.database.verification_cohorts
+        legacy_key = [("job_id", 1)]
+        target_key = [("job_id", 1), ("experiment_id", 1)]
+        indexes = await collection.index_information()
+        for name, definition in indexes.items():
+            if name == "_id_" or not definition.get("unique"):
+                continue
+            key = definition.get("key")
+            if key == target_key:
+                return
+            if key == legacy_key:
+                await collection.drop_index(name)
+        await collection.create_index(
+            [("job_id", ASCENDING), ("experiment_id", ASCENDING)],
+            unique=True,
+            name="unique_verification_cohort_per_experiment",
+        )
+
+    async def _ensure_verification_version_experiment_index(self) -> None:
+        collection = self.database.verification_versions
+        legacy_key = [("job_id", 1), ("version", 1)]
+        target_key = [("job_id", 1), ("experiment_id", 1), ("version", 1)]
+        indexes = await collection.index_information()
+        for name, definition in indexes.items():
+            if name == "_id_" or not definition.get("unique"):
+                continue
+            key = definition.get("key")
+            if key == target_key:
+                return
+            if key == legacy_key:
+                await collection.drop_index(name)
+        await collection.create_index(
+            [("job_id", ASCENDING), ("experiment_id", ASCENDING), ("version", ASCENDING)],
+            unique=True,
+            name="unique_verification_version_per_experiment",
+        )
 
     async def _drop_legacy_document_image_index(self) -> None:
         indexes = await self.database.document_images.index_information()

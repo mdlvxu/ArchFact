@@ -40,7 +40,11 @@ def _extract_json_candidate(text: str) -> str:
     if not starts:
         return stripped
     start = min(starts)
-    end_char = "}" if start == object_start and (array_start < 0 or object_start <= array_start) else "]"
+    end_char = (
+        "}"
+        if start == object_start and (array_start < 0 or object_start <= array_start)
+        else "]"
+    )
     end = stripped.rfind(end_char)
     if end > start:
         return stripped[start : end + 1]
@@ -337,15 +341,27 @@ class StructuredExtractionEngineBase:
                     code=5031,
                     status_code=502,
                 )
-            if field.value is not None and not self._matches_type(
-                field.value,
-                field_spec.type,
-            ):
-                raise DomainError(
-                    f"字段 {field_spec.key} 的值不符合 {field_spec.type} 类型",
-                    code=5029,
-                    status_code=502,
+            if field.value is not None:
+                is_valid_type, normalized_value = self._coerce_field_value(
+                    field.value,
+                    field_spec.type,
                 )
+                if is_valid_type:
+                    field.value = normalized_value
+                else:
+                    if field.raw_value is None:
+                        field.raw_value = field.value
+                    field.value = None
+                    field.status = "needs_review"
+                    warnings = self._unique_strings(
+                        [
+                            *warnings,
+                            (
+                                f"字段 {field_spec.key} 的返回值与"
+                                f"{field_spec.type} 类型不一致，已保留原值并标记待审核"
+                            ),
+                        ]
+                    )
             grounded_evidence = []
             for evidence in field.evidence:
                 grounded_quote = (
@@ -577,6 +593,7 @@ class StructuredExtractionEngineBase:
         derived_fields = {
             "artifact_id": "artifact_ids",
             "context_id": "artifact_ids",
+            "site_id": "artifact_ids",
             "figure_no": "figure_refs",
             "figure_item_no": "figure_item_nos",
             "figure_caption": "caption_texts",
@@ -587,6 +604,17 @@ class StructuredExtractionEngineBase:
             field = fields.get(field_key, {})
             values = [field.get("raw_value"), field.get("value")]
             hints[hint_key] = self._unique_strings([*hints[hint_key], *values])
+
+        base_artifact_id = self._compose_artifact_id(
+            (fields.get("site_id") or {}).get("raw_value")
+            or (fields.get("site_id") or {}).get("value"),
+            (fields.get("sequence_no") or {}).get("raw_value")
+            or (fields.get("sequence_no") or {}).get("value"),
+        )
+        if base_artifact_id:
+            hints["artifact_ids"] = self._unique_strings(
+                [*hints["artifact_ids"], base_artifact_id]
+            )
 
         linkage = linkage or {}
         identity = linkage.get("identity", {})
@@ -639,11 +667,22 @@ class StructuredExtractionEngineBase:
         visual = linkage.get("visual_link") if isinstance(linkage.get("visual_link"), dict) else {}
 
         identity_field = fields.get("artifact_id") or fields.get("context_id") or {}
+        site_field = fields.get("site_id") or {}
+        sequence_field = fields.get("sequence_no") or {}
+        composed_artifact_id = self._compose_artifact_id(
+            site_field.get("raw_value") or site_field.get("value"),
+            sequence_field.get("raw_value") or sequence_field.get("value"),
+        )
         artifact_id_raw = self._optional_text(
-            identity.get("artifact_id_raw") or identity_field.get("raw_value")
+            identity.get("artifact_id_raw")
+            or identity_field.get("raw_value")
+            or composed_artifact_id
         )
         artifact_id_normalized = self._optional_text(
-            identity.get("artifact_id_normalized") or identity_field.get("value") or artifact_id_raw
+            identity.get("artifact_id_normalized")
+            or identity_field.get("value")
+            or composed_artifact_id
+            or artifact_id_raw
         )
 
         caption_field = fields.get("figure_caption", {})
@@ -667,7 +706,6 @@ class StructuredExtractionEngineBase:
         )
         if figure_no is None and caption_raw:
             figure_no = self._extract_figure_no(caption_raw)
-
         block_by_id = {
             str(block.get("region_id")): block
             for block in chunk.blocks
@@ -681,7 +719,13 @@ class StructuredExtractionEngineBase:
             evidence_block_ids = self._unique_strings(
                 [
                     evidence.get("region_id")
-                    for field_key in ("figure_caption", "artifact_id", "context_id")
+                    for field_key in (
+                        "figure_caption",
+                        "artifact_id",
+                        "context_id",
+                        "site_id",
+                        "sequence_no",
+                    )
                     for evidence in fields.get(field_key, {}).get("evidence", [])
                     if isinstance(evidence, dict)
                 ]
@@ -689,6 +733,7 @@ class StructuredExtractionEngineBase:
         evidence_block_ids = [
             block_id for block_id in evidence_block_ids if block_id in block_by_id
         ]
+
         evidence = []
         for block_id in evidence_block_ids:
             block = block_by_id[block_id]
@@ -780,11 +825,26 @@ class StructuredExtractionEngineBase:
         text = str(value).strip()
         return text[:max_length] if text else None
 
+    @classmethod
+    def _compose_artifact_id(cls, site_id: Any, sequence_no: Any) -> str | None:
+        """Build a stable ``M3:4`` style id for the baseline's split fields."""
+
+        site = cls._optional_text(site_id, max_length=120)
+        sequence = cls._optional_text(sequence_no, max_length=80)
+        if not site:
+            return None
+        if not sequence:
+            return site
+        if re.search(r"[:：]$", site):
+            return f"{site}{sequence}"
+        return f"{site}:{sequence}"
+
     @staticmethod
     def _extract_figure_no(caption: str) -> str | None:
         normalized = unicodedata.normalize("NFKC", caption)
         match = re.search(
-            r"(?i)(?:图|fig(?:ure)?\.?)\s*([a-z]?\d+(?:[-:：]\d+)*)",
+            r"(?i)(?:图|fig(?:ure)?\.?)\s*"
+            r"([a-z]?\d+(?:[-:：]\d+)*)",
             normalized,
         )
         if not match:
@@ -846,6 +906,27 @@ class StructuredExtractionEngineBase:
         if field_type == "array":
             return isinstance(value, list)
         return False
+
+    def _coerce_field_value(self, value: Any, field_type: str) -> tuple[bool, Any]:
+        """Normalize harmless representation differences without dropping a page.
+
+        Providers occasionally return a JSON number as text or a textual
+        reference as a JSON number. Values that cannot be represented by the
+        configured field type are kept in raw_value and surfaced for review by
+        the caller instead of turning one malformed field into a page failure.
+        """
+
+        if self._matches_type(value, field_type):
+            return True, value
+        if field_type in {"string", "date", "image"} and isinstance(
+            value, (int, float)
+        ) and not isinstance(value, bool):
+            return True, str(value)
+        if field_type == "number" and isinstance(value, str):
+            candidate = value.strip()
+            if re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", candidate):
+                return True, float(candidate) if "." in candidate else int(candidate)
+        return False, None
 
 
 class CozeExtractionEngine(StructuredExtractionEngineBase):
@@ -1040,7 +1121,7 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
     ) -> list[dict[str, Any]]:
         """Give a dense terminal chunk more output room after it can no longer be split."""
         input_tokens = self._estimate_tokens(
-            self._system_prompt() + self._user_prompt(chunk, config)
+            self._system_prompt(config) + self._user_prompt(chunk, config)
         )
         available_tokens = self._request_token_budget - input_tokens - 256
         expanded_tokens = min(self._max_tokens * 2, available_tokens)
@@ -1159,7 +1240,7 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             blocks=[],
         )
         fixed_tokens = self._estimate_tokens(
-            self._system_prompt() + self._user_prompt(empty_chunk, config)
+            self._system_prompt(config) + self._user_prompt(empty_chunk, config)
         )
         text_token_budget = max(
             500,
@@ -1621,7 +1702,10 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             and field.get("value") is not None
             and str(field.get("value")).strip()
         }
-        if any(populated.get(key) for key in ("artifact_id", "context_id", "figure_caption")):
+        if any(
+            populated.get(key)
+            for key in ("artifact_id", "context_id", "site_id", "figure_caption")
+        ):
             return True
         linkage = record.get("linkage", {})
         identity = linkage.get("identity", {}) if isinstance(linkage, dict) else {}
@@ -1722,7 +1806,7 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
         payload = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": self._system_prompt()},
+                {"role": "system", "content": self._system_prompt(config)},
                 {"role": "user", "content": self._user_prompt(chunk, config)},
             ],
             "response_format": {"type": "json_object"},
@@ -1826,7 +1910,7 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
         output_tokens: int | None = None,
     ) -> int:
         return self._estimate_tokens(
-            self._system_prompt() + self._user_prompt(chunk, config)
+            self._system_prompt(config) + self._user_prompt(chunk, config)
         ) + (output_tokens or self._output_token_limit(chunk, config))
 
     def _output_token_limit(self, chunk: PageChunk, config: ExtractionConfig) -> int:
@@ -1928,7 +2012,10 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
         return max(1, int(ascii_count / 3.5 + non_ascii_count * 1.15) + 32)
 
     @staticmethod
-    def _system_prompt() -> str:
+    def _system_prompt(config: ExtractionConfig | None = None) -> str:
+        configured_prompt = (config.system_prompt or "").strip() if config else ""
+        if configured_prompt:
+            return configured_prompt
         return (
             "Return compact JSON to minimize latency. Every records item contains record_type "
             "and fields. Put dynamic schema keys only inside fields and omit null fields. "
@@ -1978,13 +2065,17 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             if str(block.get("text", "")).strip()
         ]
         source = {"ocr_blocks": blocks} if blocks else {"ocr_text": chunk.text}
+        schema = config.model_dump(mode="json")
+        for field in schema.get("fields", []):
+            if isinstance(field, dict):
+                field.pop("default_instruction", None)
         return json.dumps(
             {
                 "task": "请按 schema 对按阅读顺序排列的 OCR 原文进行 JSON 结构化抽取",
                 "chunk_id": chunk.chunk_id,
                 "page_no": chunk.page_no,
                 **source,
-                "schema": config.model_dump(mode="json"),
+                "schema": schema,
                 "compact_output_contract": {
                     "top_level": {
                         "schema_version": config.schema_version,
@@ -2043,7 +2134,6 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             },
             ensure_ascii=False,
         )
-
 
 def build_extraction_engine(settings: Settings) -> ExtractionEngine:
     if settings.extraction_engine == "coze":

@@ -2832,8 +2832,8 @@ def test_absorb_drops_orphan_color_plate_caption_without_body() -> None:
     assert output.records == []
 
 
-def test_fusion_drops_sparse_single_page_record_without_line_drawing() -> None:
-    """Table-cell cards with no 器物线图 must not remain as catalog artifacts."""
+def test_v22_fusion_keeps_sparse_single_page_record_without_line_drawing() -> None:
+    """V22 preserves extracted records; it does not apply sparse-card filtering."""
 
     service = ResultFusionService()
     missing = {
@@ -2952,17 +2952,10 @@ def test_fusion_drops_sparse_single_page_record_without_line_drawing() -> None:
         model_run_id="run-sparse-no-drawing",
     )
 
-    assert (
-        ResultFusionService.discard_unbound_sparse_catalog_records(
-            records=output.records,
-            regions=regions,
-            relations=output.relations,
-        )
-        == []
-    )
+    assert len(output.records) == 1
 
 
-def test_fusion_drops_caption_only_single_page_record_without_line_drawing() -> None:
+def test_v22_fusion_keeps_caption_only_single_page_record_without_line_drawing() -> None:
     service = ResultFusionService()
     missing = {
         "raw_value": None,
@@ -3009,17 +3002,10 @@ def test_fusion_drops_caption_only_single_page_record_without_line_drawing() -> 
         model_run_id="run-caption-only",
     )
 
-    assert (
-        ResultFusionService.discard_unbound_sparse_catalog_records(
-            records=output.records,
-            regions=[],
-            relations=output.relations,
-        )
-        == []
-    )
+    assert len(output.records) == 1
 
 
-def test_fusion_drops_identity_only_single_page_record_without_line_drawing() -> None:
+def test_v22_fusion_keeps_identity_only_single_page_record_without_line_drawing() -> None:
     service = ResultFusionService()
     config = ExtractionConfig(
         template_id="basic",
@@ -3052,17 +3038,10 @@ def test_fusion_drops_identity_only_single_page_record_without_line_drawing() ->
         model_run_id="run-id-only",
     )
 
-    assert (
-        ResultFusionService.discard_unbound_sparse_catalog_records(
-            records=output.records,
-            regions=[],
-            relations=output.relations,
-        )
-        == []
-    )
+    assert len(output.records) == 1
 
 
-def test_fusion_keeps_sparse_record_when_line_drawing_is_linked() -> None:
+def test_v22_fusion_keeps_sparse_record_when_line_drawing_is_linked() -> None:
     service = ResultFusionService()
     missing = {
         "raw_value": None,
@@ -3183,13 +3162,8 @@ def test_fusion_keeps_sparse_record_when_line_drawing_is_linked() -> None:
         model_run_id="run-sparse-with-drawing",
     )
 
-    kept = ResultFusionService.discard_unbound_sparse_catalog_records(
-        records=output.records,
-        regions=regions,
-        relations=output.relations,
-    )
-    assert len(kept) == 1
-    record = kept[0]
+    assert len(output.records) == 1
+    record = output.records[0]
     assert "drawing-40" in record["region_ids"]
     assert 40 in record["associated_pages"]
     assert 12 in record["associated_pages"]

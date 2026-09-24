@@ -18,6 +18,20 @@ from app.infrastructure.mongodb import MongoDatabase
 class ConfigPersistence:
     """Extraction templates and post-processing rules."""
 
+    async def get_extraction_system_prompt(self) -> dict[str, Any] | None:
+        return await self._db.extraction_system_prompts.find_one({"_id": "default"})
+
+    async def replace_extraction_system_prompt(self, content: str) -> None:
+        now = utc_now()
+        await self._db.extraction_system_prompts.update_one(
+            {"_id": "default"},
+            {
+                "$set": {"content": content, "updated_at": now},
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
+
     async def list_extraction_templates(self) -> list[dict[str, Any]]:
         cursor = self._db.extraction_templates.find({}).sort("position", 1)
         return await cursor.to_list(length=200)

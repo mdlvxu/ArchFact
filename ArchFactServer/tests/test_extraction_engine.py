@@ -99,6 +99,64 @@ def test_coze_adapter_normalizes_missing_fields_and_evidence() -> None:
     assert result["fields"]["texture"]["status"] == "missing"
 
 
+def test_figure_caption_is_always_treated_as_a_textual_reference() -> None:
+    config = ExtractionConfig(
+        template_id="legacy-template",
+        template_name="Legacy Template",
+        fields=[
+            ExtractionFieldSpec(
+                key="figure_caption",
+                label="Figure Caption",
+                type="number",
+            )
+        ],
+    )
+
+    assert config.fields[0].type == "string"
+
+
+def test_structured_adapter_marks_a_type_mismatch_for_review_without_failing_page() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+    config = ExtractionConfig(
+        template_id="custom-template",
+        template_name="Custom Template",
+        fields=[
+            ExtractionFieldSpec(
+                key="custom_counter",
+                label="Custom Counter",
+                type="number",
+            )
+        ],
+    )
+    chunk = PageChunk(
+        chunk_id="job:page:140",
+        page_no=140,
+        text="图3-4C M3:4",
+        blocks=[],
+    )
+
+    result = engine._normalize_record(
+        {
+            "record_type": "artifact",
+            "fields": {
+                "custom_counter": {
+                    "value": "图3-4C",
+                    "status": "valid",
+                    "evidence": [{"page": 140, "quote": "图3-4C"}],
+                }
+            },
+        },
+        chunk,
+        config,
+    )
+
+    field = result["fields"]["custom_counter"]
+    assert field["raw_value"] == "图3-4C"
+    assert field["value"] is None
+    assert field["status"] == "needs_review"
+    assert any("类型不一致" in warning for warning in result["warnings"])
+
+
 def test_coze_adapter_resolves_normalized_bbox_from_matching_pdf_block() -> None:
     engine = object.__new__(CozeExtractionEngine)
     config = ExtractionConfig(
@@ -234,8 +292,10 @@ def test_llm_prompt_defines_fluent_but_grounded_field_value_policy() -> None:
     assert "measurements.value" in system_prompt
     assert "morphological_description.value" in system_prompt
     assert "不得补充原文没有的器物事实" in system_prompt
+    assert "archaeological_card_contract" not in system_prompt
     assert user_prompt["field_value_policy"]["measurements"]["value"].startswith("整理为简洁的")
     assert "按器物部位" in user_prompt["field_value_policy"]["morphological_description"]["value"]
+    assert "archaeological_card_contract" not in user_prompt
 
 
 def test_chunk_merge_discards_empty_or_unidentified_single_field_fragments() -> None:

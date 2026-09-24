@@ -12,6 +12,7 @@ import fitz
 
 from app.core.config import Settings
 from app.core.errors import ConflictError
+from app.domain.page_semantics import PageSemantics
 from app.infrastructure.gridfs_storage import GridFsStorage
 from app.infrastructure.task_dispatcher import LocalJobDispatcher
 from app.models.schemas import ExtractionConfig, ExtractionJobCreate
@@ -23,7 +24,6 @@ from app.services.extraction_engine import ExtractionEngine, PageChunk
 from app.services.extraction_pipeline import PageExtractionResult, build_extraction_pipeline
 from app.services.page_discovery import PageDiscoveryService
 from app.services.page_preprocessor import PagePreprocessor
-from app.domain.page_semantics import PageSemantics
 from app.services.post_processor import PostProcessor
 from app.services.region_processor import RegionProcessor
 from app.services.relation_matcher import RelationMatcher
@@ -80,11 +80,15 @@ class ExtractionService:
     ) -> dict[str, Any]:
         await self._repository.get_document(request.document_id)
         pipeline_id = self._pipeline.resolve_id(request.pipeline_id)
+        system_prompt = await self._repository.get_extraction_system_prompt()
+        config = request.config.model_copy(
+            update={"system_prompt": (system_prompt or {}).get("content")}
+        )
         job = await self._repository.create_job(
             document_id=request.document_id,
             pages=request.pages,
             pipeline_id=pipeline_id,
-            config=request.config.model_dump(mode="json"),
+            config=config.model_dump(mode="json"),
             idempotency_key=idempotency_key,
         )
         if job.pop("_was_created", False):
@@ -446,8 +450,8 @@ class ExtractionService:
                 if page.get("status") != "failed":
                     await self._repository.append_event(
                         job_id,
-                        "SUCCESS",
-                        f"第 {page['page_no']} 页预处理完成",
+                        "INFO",
+                        f"第 {page['page_no']} 页预处理完成，等待语义抽取",
                     )
 
             requested_pages = set(execution_pages or [])
@@ -1342,19 +1346,6 @@ class ExtractionService:
             )
             records = entity_output.records
             entities = entity_output.entities
-            records = ResultFusionService.discard_unbound_sparse_catalog_records(
-                records=records,
-                regions=regions,
-                relations=relations,
-            )
-            entity_output = self._entity_linker.link(
-                job_id=job_id,
-                document_id=document["_id"],
-                records=records,
-                regions=regions,
-            )
-            records = entity_output.records
-            entities = entity_output.entities
             await self._repository.finish_model_run(entity_run_id, status="completed")
             active_model_run_ids.discard(entity_run_id)
             linked_entities = sum(entity.get("link_status") == "linked" for entity in entities)
@@ -1466,7 +1457,7 @@ class ExtractionService:
         schema_hash = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         payload = {
-            "cache_version": "semantic-compact-v2",
+            "cache_version": "semantic-compact-v4",
             "document_sha256": document_sha256,
             "page_no": int(page_no),
             "text_hash": text_hash,
@@ -1474,6 +1465,7 @@ class ExtractionService:
             "pipeline_id": self._pipeline.id,
             "provider": self._pipeline.extraction_stage.provider,
             "model": self._pipeline.extraction_stage.model,
+            "stage_version": self._pipeline.extraction_stage.version,
         }
         cache_key = hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")

@@ -105,156 +105,112 @@ Set-Location ..\ArchFactServer
 
 ## Operator workflow
 
-Default entry: `http://localhost:5173/`  
-Top tabs: **Data Extraction → Data Preview → Machine Verification**.
+Open the app at `http://localhost:5173/`. The top-level workflow is **Data Extraction → Data Preview → Machine Verification**. Use the **中 / EN** switch in the upper-right corner at any time.
 
-> Screenshots live in `ArchFactClient/docs/readme-images/`.  
-> Source files on this machine: `C:\Users\dell\Pictures\Screenshots\ArchFact`
+All screenshots in this guide are stored in `ArchFactClient/docs/readme-images/` and correspond to the source images in the repository-root `图片流程/` folder.
 
----
-
-### 1. End-to-end flow
-
-![ArchFact overview](ArchFactClient/docs/readme-images/archfact-overview.png)
+### 1. Workflow overview
 
 ```text
-Upload PDF
-  → Configure page range / template and start extraction
-  → PDF preprocessing (text layer / OCR)
-  → Dual-channel extraction (OCR→LLM + image→YOLO)
-  → Relation matching → fusion & storage
-  → Data Preview: review artifacts, evidence, and links
-  → Machine Verification: run assertions, review fixed 18 samples
-  → AI review (DeepSeek)
-  → Freeze a version (e.g. V1) and export
+Import PDF → configure template, field prompts, and page range → start extraction
+  → PDF text layer / PaddleOCR, YOLO artifact detection, LLM structured extraction
+  → match and fuse artifact IDs, captions, line drawings, crops, and color plates
+  → inspect cards, source evidence, and links in Data Preview
+  → V1: LLM Assertions V1 + selected rules over the full card set → 18 fixed human samples
+  → AI calculates sample consistency from the human decisions and freezes V1
+  → V2: LLM Assertions V2 + selected rules over the full card set, reusing the same 18 samples
+  → inspect versions, compare metrics, and export JSON or Excel details
 ```
 
----
+Machine verification counts only **deduplicated entity cards with a linked artifact crop**. Text-only provenance records, records without a crop, and repeated page-level records are retained in the project but are excluded from the full verification total and the 18-sample cohort.
 
-### 2. Start the project (short)
+### 2. Start the project
 
-1. Start MongoDB (bundled `mongod` on port `27017` is fine).
-2. Start the backend: in `ArchFactServer`, run `.\.venv\Scripts\python.exe run.py` (default `http://localhost:8080`).
-3. Start the frontend: in `ArchFactClient`, run `pnpm dev` (default `http://localhost:5173`).
-4. Open the frontend URL; use the top-right toggle for **中 / EN**.
+After completing [SETUP_WINDOWS.md](SETUP_WINDOWS.md), double-click `start-archfact.cmd` in the project root. It starts MongoDB, the backend, and the frontend, then opens the browser.
 
----
+You may also run the following in PowerShell:
 
-### 3. Tab 1: Data Extraction
+```powershell
+.\start-archfact.cmd    # start
+.\status-archfact.cmd   # inspect status
+.\stop-archfact.cmd     # stop cleanly
+```
 
-**Goal:** Upload an archaeology report PDF, configure the extraction scope, and start the backend pipeline (page rendering, OCR, YOLO detection, semantic extraction, relation matching, etc.).
+Before a full first extraction, configure the LLM, PaddleOCR, and YOLO as needed in local `.env` files. Unconfigured capabilities are unavailable or run in a degraded mode.
 
-![Data Extraction (English UI)](ArchFactClient/docs/readme-images/data-extraction-en.png)
+### 3. Data Extraction: import, configure, and run
 
-#### Steps
+![Data Extraction](ArchFactClient/docs/readme-images/data-extraction-en.png)
 
-1. Open the top **Data Extraction** tab.
-2. Click **Input PDF** in the top-right and choose the report file.
-3. In settings, confirm:
-   - Page range (single pages, ranges, or combinations)
-   - Extraction template / fields
-   - Post-processing rules (if any)
-4. Start extraction and watch progress / logs.
-5. When the job finishes (or finishes with warnings), the UI usually switches to **Data Preview**.
+1. Open **Data Extraction** and click **Input PDF**.
+2. Choose an **Extraction Template** on the right. The Latest Artifact Card Template is intended for everyday use; Basic Research Template retains the full archaeological-card field composition.
+3. To revise one field's extraction rule, click the pencil beside that field in **Label Constraints**, edit its prompt directly, and save.
+4. Preview the combined field prompt in the template area. The system public prompt can also be previewed and edited separately. Changes apply to subsequently started extractions; they do not rewrite existing cards.
+5. Enable any required **Post-processing Rules**, such as Chinese-number conversion, unit standardization, or punctuation normalization.
+6. Select single pages, ranges, or a combination in **Page Range**, then start extraction.
 
----
+Progress shows elapsed time, estimated time remaining, page rate, and logs. You can stop a task; completed pages and persisted artifact cards remain available. When the task finishes, continue in **Data Preview**.
 
-### 4. Tab 2: Data Preview (browse & check)
+### 4. Data Preview: inspect cards and relations
 
-**Goal:** Compare the PDF with the structured catalog; inspect text evidence, line drawings, YOLO crops, and color-plate links.
+![Data Preview](ArchFactClient/docs/readme-images/data-preview-en.png)
 
-![Data Preview (English UI)](ArchFactClient/docs/readme-images/data-preview-en.png)
-
-#### UI regions
-
-| Region | Role |
+| Region | Purpose |
 | --- | --- |
-| Left: Page Navigator | Switch report pages and thumbnails |
-| Center top: Content Preview | Page annotations, evidence boxes, YOLO detections |
-| Center bottom: Related Pages | Line drawings / text evidence / crops / color plates |
-| Right: Archaeological Catalog | Artifact cards and detail fields |
+| Page Navigator | Select PDF pages and thumbnails. |
+| Content Preview | Inspect the source page, text-evidence boxes, line drawings, YOLO crops, and links. |
+| Related Pages | Compare linked line drawings, text evidence, artifact crops, and color plates side by side. |
+| Archaeological Catalog | Browse eligible artifact cards and their detail fields. |
 
-#### Steps
+Select a card in the catalog, then check its ID, dimensions, texture/surface color, category, morphology, and figure caption. Click linked content in the preview to verify that the evidence comes from the right source text and that the line drawing, crop, and color plate refer to the same artifact.
 
-1. Pick a page on the left and confirm the PDF preview loads.
-2. Select an artifact in the catalog and review fields (ID, color, texture, measurements, category, morphology, etc.).
-3. Click annotations in Content Preview to verify:
-   - Text evidence matches the source
-   - Line drawings / crops are correct
-   - Relations are reasonable
-4. To adjust a relation, use **Accept / Reject / Rebind** in the preview area.
+Only entities with a valid artifact crop appear as eligible cards. Text-only records without a crop do not create catalog cards and never enter machine verification.
 
----
+### 5. Machine Verification: V1 baseline and full assertions
 
-### 5. Tab 3: Machine Verification (start review)
+![Machine Verification running](ArchFactClient/docs/readme-images/machine-verification-running-en.png)
 
-**Goal:** Configure assertion rules and run machine verification. The system samples a fixed set of **18** items for human review.
+1. Open **Machine Verification** and confirm the active assertion experiment, eligible artifact count, and matching-version ID.
+2. The first run always uses **LLM Assertions V1**. Enable or edit the additional verification rules required for this run.
+3. Click **Execute**. The system applies the V1 baseline and selected rules to every eligible artifact card.
+4. While running, use **Pause**, **Resume**, or **Terminate** as needed. Terminating discards the incomplete run so you can change rules and start again; it does not require PDF re-extraction.
+5. When the V1 full run completes, the system fixes a balanced cohort of 18 records and opens human-review mode in Data Preview.
 
-![Machine Verification (English UI)](ArchFactClient/docs/readme-images/machine-verification-en.png)
+A **New experiment baseline** does not re-extract the PDF or delete fused cards. It opens an independent assertion sequence with a new V1 and a new fixed 18-sample cohort. The current experiment must complete its V1 full run, human review, and AI review before another baseline can be created. Archived experiments are view/export only.
 
-#### UI regions
+### 6. Human review of the fixed 18 samples
 
-| Region | Role |
+![Human review](ArchFactClient/docs/readme-images/data-preview-review-en.png)
+
+1. The upper-right status reads **Complete Verification · N remaining**.
+2. For each sample, inspect the fields, source evidence, line drawing, crop, and color-plate relations in the right-hand verification panel.
+3. Choose **PASS** if the card is acceptable. Choose **FAIL** to select a failure type and optionally add a note.
+4. After submitting a decision, the panel collapses so you can select the next item. When all 18 records are reviewed, click **Complete Verification**.
+
+Human decisions are the reference for version evaluation. They do not directly overwrite production cards or the original extraction output.
+
+### 7. AI review, V1 freeze, and V2
+
+After human review, the system compares the fixed samples' human decisions with the V1 machine decisions and calculates a confusion matrix and four metrics: Error Coverage, Precision, Alignment, and Review Load. Human PASS/FAIL remains the evaluation reference.
+
+After V1 is frozen, return to Machine Verification for the result. The second run automatically targets **LLM Assertions V2**: select rules, run full verification again, and reuse the same 18 samples for comparable metrics. V3 is not executable until its corresponding assertion baseline is configured.
+
+![Machine Verification result](ArchFactClient/docs/readme-images/machine-verification-result-en.png)
+
+The result page provides:
+
+- **Sample Alignment**: the four metrics calculated from the 18 reviewed samples;
+- **Full Verification**: the actual deduplicated eligible-card total and PASS, ERROR, and UNCERTAIN counts;
+- **Error Field Distribution**: only explicit causes of final failures; one card may have more than one cause;
+- **Version History**: assertion baseline, rules, impact, and export status for V1, V2, and later versions.
+
+### 8. Export and notes
+
+The upper-right **Output** menu provides two files:
+
+| File | Contents |
 | --- | --- |
-| Left: Assertions | Enable / edit rules, click **Execute** |
-| Center: Verification Result | Sample alignment, pass/error stats, error-field distribution |
-| Right: Version History | Summaries and impact diffs for V1, V2, … |
-| Top-right: Export | Download the exportable verification version JSON |
+| Experiment snapshot JSON | Current experiment metadata, assertion baseline, rules, samples, metrics, and version data; suitable for archival or programmatic use. |
+| Full machine-verification details Excel | Per-card machine verdicts, reasons, field-level decisions, relation information, and summaries; suitable for manual review and delivery. |
 
-#### Steps
-
-1. Open the top **Machine Verification** tab.
-2. Confirm the rules to enable (ID uniqueness, color null logic, figure-caption checks, etc.).
-3. Click **Execute**.
-4. After the verification session is created, the UI enters **review mode** under Data Preview (fixed 18 samples).
-
----
-
-### 6. Human review of 18 samples
-
-**Goal:** Mark each fixed sample as human **Pass / Fail** before AI review and version freeze.
-
-![Review mode (English UI)](ArchFactClient/docs/readme-images/data-preview-review-en.png)
-
-#### Tips
-
-1. The top-right shows **Complete verification · N remaining**.
-2. Browse PDF pages on the left, check evidence in the center, and act in the verification panel on the right.
-3. For the current sample:
-   - **Pass**: human accepts the extraction
-   - **Fail**: choose a failure type (field error, text-evidence error, caption match error, etc.) and optionally add a note
-4. Continue until all 18 samples are reviewed (remaining = 0).
-
-#### Submit when finished
-
-When all 18 samples have human verdicts, the top-right becomes clickable **Complete verification**:
-
-![Review completed (English UI)](ArchFactClient/docs/readme-images/data-preview-review-completed-en.png)
-
-This starts DeepSeek AI review (it does not rewrite production extraction records; it only compares human vs AI).
-
----
-
-### 7. AI review in progress
-
-**Goal:** The LLM compares automatic results, OCR evidence, and gold labels (if bound), then records agreement / conflict with human verdicts.
-
-![AI reviewing (English UI)](ArchFactClient/docs/readme-images/data-preview-ai-reviewing-en.png)
-
-#### Tips
-
-1. The top-right shows progress such as **AI review xx%**. Wait and keep the page open.
-2. The catalog shows pass/fail markers on samples.
-3. When AI finishes, the system freezes a version (e.g. **V1**) using the human PASS/FAIL verdicts and jumps to **Machine Verification**. Human–AI conflicts are kept in the version report and no longer block version creation.
-
----
-
-### 8. Inspect the version and export
-
-Back on **Machine Verification**:
-
-1. Select V1 / V2 / … in **Version History**
-2. Review sample alignment, pass/error counts, and error-field distribution
-3. Click **Export** in the top-right to download a file such as `archfact-V1-M0.json`
-
-![Version result & export (English UI)](ArchFactClient/docs/readme-images/machine-verification-en.png)
+If a legacy page shows a different artifact count from an older screenshot, use the actual **Full Verification** count. It excludes text-only records without crops and deduplicates entities. Refresh Machine Verification to update an existing experiment's displayed count; PDF re-extraction is not required.

@@ -47,6 +47,11 @@ const metrics = computed(() => buildProcessingMetrics({
   locale: locale.value,
 }))
 
+const stoppedSummary = computed(() => t('processing.cancelledSummary', {
+  current: props.processedPages,
+  total: props.totalPages,
+}))
+
 onMounted(() => {
   clockTimer = globalThis.setInterval(() => {
     if (props.running) nowMs.value = Date.now()
@@ -71,6 +76,13 @@ onBeforeUnmount(() => {
       :stroke-width="11"
       color="#b76616"
     />
+    <p
+      v-if="stopped"
+      class="processing__stopped-summary"
+      role="status"
+    >
+      {{ stoppedSummary }}
+    </p>
 
     <div class="processing__body">
       <div
@@ -183,11 +195,22 @@ onBeforeUnmount(() => {
 }
 
 .processing__progress {
-  margin-bottom: 12px;
+  margin-bottom: 7px;
 
   :deep(.el-progress-bar__outer) {
     background-color: #ead9c8;
   }
+}
+
+.processing__stopped-summary {
+  margin: 0 0 8px;
+  font-size: var(--af-font-caption);
+  line-height: 1.35;
+  color: #9a5b19;
+}
+
+.processing__stopped-summary + .processing__body {
+  height: calc(100% - 75px);
 }
 
 .processing__body {
