@@ -2,6 +2,35 @@
 
 [English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
 
+## quality-baseline-v6 — 2026-09-24
+
+Main changes since `quality-baseline-v5` (2026-09-20).
+
+### Extraction templates and card scope
+
+- Add editable system public prompts, per-field prompt editing, template prompt preview, and a current Latest Artifact Card Template alongside the preserved Basic Research Template
+- Keep text-only provenance records in storage, but show and validate only deduplicated artifact entities with a linked crop
+- Align experiment headers, full-verification totals, human samples, and exports to the same crop-bound card count; existing experiments backfill the corrected count without PDF re-extraction
+
+### Assertion experiments and exports
+
+- Add isolated experiment baselines: V1 uses LLM Assertions V1 and a fixed cohort of 18 human samples; V2 uses LLM Assertions V2 while reusing that cohort for comparable metrics
+- Add pause, resume, and terminate controls for full machine verification; archived experiments are view/export only
+- Add machine-verification result JSON and full per-card Excel export
+
+### Interface, launchers, and documentation
+
+- Complete Chinese/English localization for the experiment bar, run progress, experiment switcher, and export menu
+- Harden the Windows launcher state and stop script against stale PIDs after restart
+- Rewrite bilingual operator workflows and refresh the Chinese/English process screenshots
+
+### Verification
+
+- Frontend: `pnpm build` passed
+- Backend: `tests/test_machine_verification.py` passed (10 tests)
+
+---
+
 ## quality-baseline-v5 — 2026-09-20
 
 Main changes since `quality-baseline-v4` (2026-09-07).
