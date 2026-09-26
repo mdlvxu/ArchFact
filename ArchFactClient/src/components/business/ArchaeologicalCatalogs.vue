@@ -340,10 +340,10 @@ function recordTitle(record: ExtractionRecord) {
 }
 
 function recordSubtitle(record: ExtractionRecord) {
-  return (
-    catalogCategoryText(record) ||
-    t('common.page', { page: record.source_pages[0] ?? '—' })
-  )
+  // A source page is provenance, not an artifact category.  Showing “第 N 页”
+  // after the “类别” label makes an empty extraction look like a valid category
+  // and disagrees with the detail panel. Keep both views honest and consistent.
+  return catalogCategoryText(record) || '—'
 }
 
 function recordTexture(record: ExtractionRecord) {

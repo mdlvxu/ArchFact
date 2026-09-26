@@ -41,7 +41,7 @@ function updateRule(ruleId: number, changes: Partial<VerificationRule>) {
 }
 
 function toggleRule(rule: VerificationRule) {
-  updateRule(rule.id, { enabled: !rule.enabled })
+  updateRule(rule.id, { enabled: !rule.enabled, updated: true })
 }
 
 function removeRule(ruleId: number) {
@@ -63,9 +63,13 @@ function openEditDialog(rule: VerificationRule) {
 
 async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) {
   if (editingRule.value) {
+    const current = props.rules.find((rule) => rule.id === editingRule.value?.id)
+    const changed = Boolean(
+      current && (current.title !== draft.title || current.description !== draft.description),
+    )
     updateRule(editingRule.value.id, {
       ...draft,
-      updated: true,
+      updated: changed || current?.updated,
     })
     return
   }
@@ -75,7 +79,6 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
     id: nextId,
     ...draft,
     enabled: true,
-    updated: true,
   }
   emit('update:rules', [newRule, ...props.rules])
   await nextTick()

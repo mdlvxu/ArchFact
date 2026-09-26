@@ -73,7 +73,6 @@ function createDefaultRules(): VerificationRule[] {
       title: 'Color Null Value Logic',
       description: '“None” is no longer flagged as an error when the source has no color record.',
       enabled: false,
-      updated: true,
     },
     {
       id: 3,
@@ -248,7 +247,7 @@ async function finishMachineRun(run: MachineVerificationRun) {
   }
   await loadVersions()
   const total = run.pass_count + run.fail_count + run.uncertain_count
-  ElMessage.success(`断言复核完成：${total} 条器物已重新校验，人工样本已复用`)
+  ElMessage.success(t('verification.recheckCompleted', { count: total }))
 }
 
 /**
@@ -265,18 +264,18 @@ async function openHumanReview(run: MachineVerificationRun | null = machineRun.v
       : await getActiveVerificationSession(props.jobId, { suppressErrorMessage: true })
 
     if (session.status !== 'in_progress') {
-      throw new Error('人工核验样本当前不可继续审核')
+      throw new Error(t('verification.humanReviewUnavailable'))
     }
     openedHumanReviewSessionId.value = session.id
     emit('startVerification', session)
-    ElMessage.success(`全量机器校验完成，已生成 ${session.sample_count} 条人工核验样本`)
+    ElMessage.success(t('verification.humanReviewOpened', { count: session.sample_count }))
   } catch (error: unknown) {
     // 首次完成后仍保留可恢复状态；不把它误显示成“后续复核完成”。
     await loadVersions()
     ElMessage.error(
       error instanceof Error
-        ? `人工核验样本未能打开：${error.message}`
-        : '人工核验样本未能打开，请刷新后重试。',
+        ? `${t('verification.humanReviewOpenFailed')} ${error.message}`
+        : t('verification.humanReviewOpenFailed'),
     )
   } finally {
     openingHumanReview.value = false
@@ -295,7 +294,7 @@ async function pollMachineRun(runId: string) {
     }
     running.value = false
     if (run.status === 'paused') {
-      ElMessage.info('全量机器校验已暂停，可在左侧继续执行')
+      ElMessage.info(t('verification.pausedCanResume'))
       return
     }
     if (run.status === 'failed') {
@@ -304,14 +303,17 @@ async function pollMachineRun(runId: string) {
         && !run.session_id
       ElMessage.error(
         sampleCreationFailed
-          ? `全量判断已完成，但18条人工核验样本创建失败：${run.error || '请重试本次 V1 校验'}`
+          ? t('verification.sampleCreationFailed', {
+              count: 18,
+              reason: run.error || t('verification.startFailed'),
+            })
           : (run.error || t('verification.startFailed')),
       )
       return
     }
     if (run.status === 'terminated') {
       running.value = false
-      ElMessage.info('本次全量机器校验已终止；可修改规则后重新执行')
+      ElMessage.info(t('verification.terminatedCanRestart'))
       return
     }
     await finishMachineRun(run)
@@ -327,7 +329,7 @@ async function pauseMachineVerification() {
   try {
     machineRun.value = await pauseMachineVerificationRun(props.jobId, machineRun.value.id)
     running.value = false
-    ElMessage.info('全量机器校验已暂停，已完成的结果会被保留')
+    ElMessage.info(t('verification.pausedSaved'))
   } catch (error: unknown) {
     ElMessage.error(error instanceof Error ? error.message : t('verification.startFailed'))
     if (machineRun.value) void pollMachineRun(machineRun.value.id)
@@ -340,7 +342,7 @@ async function resumeMachineVerification() {
     machineRun.value = await resumeMachineVerificationRun(props.jobId, machineRun.value.id)
     running.value = true
     void pollMachineRun(machineRun.value.id)
-    ElMessage.success('全量机器校验已继续')
+    ElMessage.success(t('verification.resumed'))
   } catch (error: unknown) {
     ElMessage.error(error instanceof Error ? error.message : t('verification.startFailed'))
   }
@@ -353,7 +355,7 @@ async function terminateMachineVerification() {
   try {
     machineRun.value = await terminateMachineVerificationRun(props.jobId, machineRun.value.id)
     running.value = false
-    ElMessage.success('本次全量机器校验已终止；可修改规则后重新执行')
+    ElMessage.success(t('verification.terminatedCanRestart'))
   } catch (error: unknown) {
     ElMessage.error(error instanceof Error ? error.message : t('verification.startFailed'))
     if (machineRun.value?.status === 'running') void pollMachineRun(machineRun.value.id)
@@ -549,11 +551,21 @@ const versions = computed<VerificationVersion[]>(() =>
       : 0
     const afterRate = Math.round((version.report.human_machine_alignment ?? version.report.pass_rate) * 100)
     const enabledCount = version.rules.filter((rule) => rule.enabled).length
+    const baselineTitle = version.version === 1
+      ? t('verification.baselineV1')
+      : version.version === 2
+        ? t('verification.baselineV2')
+        : version.assertion_baseline_name ?? t('verification.baselineExecution')
     return {
       version: version.version,
       createdAt: formatTimestamp(version.created_at),
-            title: version.assertion_baseline_name ?? (version.version === 1 ? 'LLM 断言 V1' : 'Assertion execution'),
-            summary: `${enabledCount} effective assertions · ${version.report.total_artifacts} full records · ${version.report.sample_count} fixed human samples · ${version.matching_version_id ?? 'M0'}`,
+      title: baselineTitle,
+      summary: t('version.summary', {
+        rules: enabledCount,
+        records: version.report.total_artifacts,
+        samples: version.report.sample_count,
+        matching: version.matching_version_id ?? 'M0',
+      }),
       matchingVersionId: version.matching_version_id ?? 'M0',
       staleCount: version.report.stale_count ?? 0,
       relationChangedCount: version.report.relation_changed_count ?? 0,
@@ -688,9 +700,9 @@ async function resetInvalidV1() {
     rules.value = createDefaultRules()
     await loadVersions()
     if (versionSnapshots.value.some((version) => version.version === 1)) {
-      throw new Error('无效 V1 已提交清除，但页面尚未刷新完成；请刷新页面后确认。')
+      throw new Error(t('verification.invalidV1RefreshIncomplete'))
     }
-    ElMessage.success('无效 V1 已清除；请检查模型服务后重新执行 LLM 断言 V1。')
+    ElMessage.success(t('verification.invalidV1Cleared'))
   } catch (error: unknown) {
     ElMessage.error(error instanceof Error ? error.message : t('verification.startFailed'))
   } finally {
@@ -704,7 +716,7 @@ function beginNewExperiment() {
     return
   }
   if (!canCreateExperiment.value) {
-    ElMessage.warning(newExperimentBlockedReason.value || '当前实验尚不能新建下一基线。')
+    ElMessage.warning(newExperimentBlockedReason.value || t('verification.newExperimentBlocked'))
     return
   }
   newExperimentConfirmOpen.value = true
@@ -727,7 +739,7 @@ async function confirmNewExperiment() {
     rules.value = createDefaultRules()
     await loadVersions()
     newExperimentConfirmOpen.value = false
-    ElMessage.success(`${verificationExperiment.value.name} 已就绪，请执行 LLM 断言 V1`)
+    ElMessage.success(t('verification.experimentReady', { name: verificationExperiment.value.name }))
   } catch (error: unknown) {
     ElMessage.error(error instanceof Error ? error.message : t('verification.startFailed'))
   } finally {
@@ -765,7 +777,7 @@ function exportResult() {
       jobId: props.jobId,
       exportedAt: new Date().toISOString(),
       experimentId: version.experiment_id ?? 'legacy',
-      experimentName: version.experiment_name ?? '历史校验',
+      experimentName: version.experiment_name ?? t('verification.experiment.legacyName'),
       verificationVersion: `V${version.version}`,
       verificationVersionId: version.id,
       matchingVersionId: version.matching_version_id ?? 'M0',
@@ -791,7 +803,7 @@ function exportResult() {
 async function exportFullMachineDetails() {
   const version = selectedSnapshot.value
   if (!props.jobId || !version || exportingMachineDetails.value) {
-    ElMessage.warning('请先选择已完成的校验版本。')
+    ElMessage.warning(t('verification.selectCompletedVersion'))
     return
   }
   exportingMachineDetails.value = true
@@ -800,12 +812,12 @@ async function exportFullMachineDetails() {
     const url = globalThis.URL.createObjectURL(blob)
     const link = globalThis.document.createElement('a')
     link.href = url
-    link.download = `ArchFact-V${version.version}-全量机器校验明细.xlsx`
+    link.download = t('verification.machineDetailsFileName', { version: version.version })
     link.click()
     globalThis.URL.revokeObjectURL(url)
-    ElMessage.success(`V${version.version} 全量机器校验明细已导出。`)
+    ElMessage.success(t('verification.machineDetailsExported', { version: version.version }))
   } catch (error: unknown) {
-    ElMessage.error(error instanceof Error ? error.message : '全量机器校验明细导出失败。')
+    ElMessage.error(error instanceof Error ? error.message : t('verification.machineDetailsExportFailed'))
   } finally {
     exportingMachineDetails.value = false
   }

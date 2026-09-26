@@ -593,7 +593,6 @@ class StructuredExtractionEngineBase:
         derived_fields = {
             "artifact_id": "artifact_ids",
             "context_id": "artifact_ids",
-            "site_id": "artifact_ids",
             "figure_no": "figure_refs",
             "figure_item_no": "figure_item_nos",
             "figure_caption": "caption_texts",
@@ -2034,6 +2033,10 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             "字段内容跨越多个 block 时，q 和 rid 必须返回顺序一致的数组，覆盖所有相关 block。"
             "不得虚构页码、器物编号、图号、图中序号、图版号或事实。"
             "器物编号（如 T3:3）、图号（如 图6）和图中序号（如 3）必须分开。"
+            "Typology label BI(M5:1): use M5:1 as identity; BI is B型I式 context, never an ID."
+            "只有 OCR 原文明确出现完整‘遗迹号:序号’（如 M14:1）的条目，才能输出 record_type=artifact。"
+            "仅有 M14、T0402、H125 等遗迹/墓葬/探方标题，或仅描述位置、填土和随葬品总数时，"
+            "属于上下文，不得生成器物记录，也不得把相邻线图编号补作该记录的序号。"
             "evidence_block_ids 只能引用输入 ocr_blocks 中真实存在的 region_id。"
             "raw 值保留 OCR 原文；normalized 值只做有依据的规范化，"
             "疑似 OCR 纠错必须标记 needs_review。"
@@ -2082,7 +2085,7 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
                         "chunk_id": chunk.chunk_id,
                         "records": "array",
                     },
-                    "record": {
+                "record": {
                         "record_type": "artifact",
                         "fields": {
                             "<schema_field_key>": {
@@ -2096,8 +2099,13 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
                                 "s": "valid or needs_review",
                             }
                         },
-                    },
-                    "omit": ["null fields", "page", "bbox", "confidence", "source"],
+                },
+                "record_eligibility": (
+                    "仅当 OCR 原文在同一器物条目中明确包含完整‘遗迹号:序号’时，"
+                    "才输出 record_type=artifact；遗迹/墓葬/探方标题和概述段落不输出器物记录。"
+                    "Typology label BI(M5:1): output/link M5:1 only; BI is B型I式 context, not an ID."
+                ),
+                "omit": ["null fields", "page", "bbox", "confidence", "source"],
                 },
                 "field_value_policy": {
                     "measurements": {
@@ -2119,8 +2127,8 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
                 },
                 "system_linkage_schema": {
                     "identity": {
-                        "artifact_id_raw": "OCR 原文中的器物或遗迹编号；没有则为 null",
-                        "artifact_id_normalized": "规范化编号；没有则为 null",
+                        "artifact_id_raw": "OCR 原文中的完整器物编号；没有则为 null。BI(M5:1) 仅写 M5:1，不能写 BI",
+                        "artifact_id_normalized": "规范化后的完整器物编号；没有则为 null",
                     },
                     "visual_link": {
                         "figure_no": "图号，如 图6；没有则为 null",

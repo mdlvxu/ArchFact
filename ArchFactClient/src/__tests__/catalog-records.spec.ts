@@ -130,9 +130,46 @@ describe('groupCatalogRecordsByEntity', () => {
       'with-drawing',
     ])
   })
+
+  it('uses the textual sibling of a typology drawing when both share an entity', () => {
+    const records = [
+      {
+        ...record('drawing-bi-m5-1', 74, 'entity-m5-1', {
+          artifact_id: field('BI(M5:1)', 74),
+        }),
+        primary_artifact_region_id: 'drawing-m5-1',
+        thumbnail_region_id: 'drawing-m5-1',
+      },
+      {
+        ...record('text-m5-1', 39, 'entity-m5-1', {
+          artifact_id: field('M5:1', 39),
+        }),
+        text_evidence: [
+          {
+            page: 39,
+            quote: 'M5:1，直口，卷沿，尖圆唇，微鼓腹，盆形器身，浅圈底。',
+            bbox: [0.1, 0.2, 0.9, 0.25] as [number, number, number, number],
+            kind: 'text' as const,
+          },
+        ],
+      },
+    ]
+
+    expect(groupCatalogRecordsByEntity(records).map((item) => item.id)).toEqual([
+      'text-m5-1',
+    ])
+  })
 })
 
 describe('catalog descriptive fallbacks from text evidence', () => {
+  it('does not infer a category from a record without category evidence', () => {
+    const idOnly = record('id-only', 264, null, {
+      artifact_id: field('QFM60:46', 264),
+    })
+
+    expect(catalogCategoryText(idOnly)).toBe('')
+  })
+
   it('surfaces category, texture, and morphology when only the artifact ID was extracted', () => {
     const sparse = {
       ...record('sparse', 88, null, {

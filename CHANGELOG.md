@@ -18,6 +18,12 @@ Main changes since `quality-baseline-v5` (2026-09-20).
 - Add pause, resume, and terminate controls for full machine verification; archived experiments are view/export only
 - Add machine-verification result JSON and full per-card Excel export
 
+### Artifact matching precision
+
+- Normalize composite typology graphic labels such as `BI(M5:1)` and `AII(M15:6)` to the complete identifier inside the parentheses; `BI` and `AII` remain type/style context, never artifact IDs
+- Prefer an exact identifier in the three-page local window when connecting body text and crops; fall back to document-wide exact-ID matching only when no local match exists
+- When one entity has both a graphic crop and body text, show the richer body record in the catalog; display `—` for a missing category instead of misrepresenting the source page as a category
+
 ### Interface, launchers, and documentation
 
 - Complete Chinese/English localization for the experiment bar, run progress, experiment switcher, and export menu
@@ -28,6 +34,7 @@ Main changes since `quality-baseline-v5` (2026-09-20).
 
 - Frontend: `pnpm build` passed
 - Backend: `tests/test_machine_verification.py` passed (10 tests)
+- Backend matching regression: 81 passing tests across `test_result_fusion.py`, `test_artifact_entity_linker.py`, and `test_extraction_engine.py`
 
 ---
 

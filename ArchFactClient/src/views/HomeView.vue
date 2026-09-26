@@ -54,7 +54,7 @@ import {
   uploadPercentFromEvent,
   type PdfImportProgress,
 } from '@/domain/pdf-import'
-import { useI18n } from '@/i18n'
+import { localizeProcessingLog, useI18n } from '@/i18n'
 import type {
   ExtractionConfigPayload,
   ExtractionJob,
@@ -338,7 +338,9 @@ function clearLogs() {
 
 /** 将当前日志导出为本地文本文件 */
 function exportLogs() {
-  const content = logs.value.map((item) => `[${item.status}] ${item.text}`).join('\n')
+  const content = logs.value
+    .map((item) => `[${item.status}] ${localizeProcessingLog(item.text)}`)
+    .join('\n')
   const blob = new globalThis.Blob([content || 'No processing logs'], {
     type: 'text/plain;charset=utf-8',
   })
@@ -668,7 +670,7 @@ async function renderPdfPage(
   document = pdfDocument.value,
 ) {
   if (!document) {
-    throw new Error('PDF 文档尚未加载')
+    throw new Error(t('home.pdfNotLoaded'))
   }
 
   const page = await document.getPage(pageNumber)
@@ -677,7 +679,7 @@ async function renderPdfPage(
   const context = canvas.getContext('2d')
 
   if (!context) {
-    throw new Error('当前浏览器不支持 PDF 画布渲染')
+    throw new Error(t('home.pdfRenderUnsupported'))
   }
 
   canvas.width = Math.ceil(viewport.width)
@@ -707,7 +709,7 @@ async function renderSelectedPage(pageNumber: number) {
         const item = pdfPages.value.find((candidate) => candidate.page === pageNumber)
         if (item) item.thumbnailUrl = restoredUrl
       }
-      if (!restoredUrl) throw new Error('当前页面预览图尚未生成')
+      if (!restoredUrl) throw new Error(t('home.pagePreviewUnavailable'))
       if (requestId === previewRequestId) previewUrl.value = restoredUrl
       return
     }

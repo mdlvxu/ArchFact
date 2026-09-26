@@ -453,13 +453,20 @@ onBeforeUnmount(() => {
 
 .constraint-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 44px;
   gap: 5px;
   align-items: center;
   min-width: 0;
   font-size: var(--af-font-body);
-  overflow: hidden;
   color: #625c56;
+}
+
+/* English field names can be wider than the narrow settings sidebar. Keep the
+   edit action in its own fixed column and truncate only the visible label. */
+.constraint-row > span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

@@ -151,7 +151,10 @@ function catalogPreviewPages(record: ExtractionRecord) {
 }
 
 function isSparseIdentityCatalogCard(record: ExtractionRecord) {
-  return bodyFieldKeys.every((key) => !hasValue(record.fields[key]))
+  return (
+    bodyFieldKeys.every((key) => !hasValue(record.fields[key])) &&
+    catalogTextEvidenceSummary(record).length < 12
+  )
 }
 
 function hasBoundLineDrawing(record: ExtractionRecord) {
@@ -166,7 +169,7 @@ export function isUnboundSparseSinglePageCatalogRecord(record: ExtractionRecord)
 }
 
 export function catalogRepresentativeScore(record: ExtractionRecord) {
-  return Object.entries(record.fields).reduce((score, [fieldKey, field]) => {
+  const fieldScore = Object.entries(record.fields).reduce((score, [fieldKey, field]) => {
     if (!hasValue(field)) return score
     const weight = bodyFieldWeights[fieldKey] ?? 2
     const hasOwnPageTextEvidence = field.evidence.some(
@@ -176,6 +179,11 @@ export function catalogRepresentativeScore(record: ExtractionRecord) {
     )
     return score + weight + Number(hasOwnPageTextEvidence)
   }, 0)
+  // A body paragraph recovered as text evidence is more useful than an empty
+  // drawing-page stub, even if a previous extraction did not populate every
+  // structured field. This lets a crop-bearing sibling supply the image while
+  // the catalog keeps the record that actually explains the artifact.
+  return fieldScore + (catalogTextEvidenceSummary(record).length >= 12 ? 9 : 0)
 }
 
 /**

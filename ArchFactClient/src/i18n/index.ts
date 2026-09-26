@@ -193,6 +193,9 @@ const en: Record<string, string> = {
   'home.fileTooLarge': 'PDF files cannot exceed {max} MB',
   'home.loaded': 'Loaded {name}, {count} pages in total',
   'home.loadFailed': 'Failed to load the PDF file',
+  'home.pdfNotLoaded': 'The PDF document has not been loaded',
+  'home.pdfRenderUnsupported': 'This browser does not support PDF canvas rendering',
+  'home.pagePreviewUnavailable': 'The current page preview is not available yet',
   'processing.title': 'Processing Progress',
   'processing.noLogs': 'No processing logs',
   'processing.startTime': 'Start Time',
@@ -232,6 +235,7 @@ const en: Record<string, string> = {
   'settings.copyPrompt': 'Copy prompt',
   'settings.promptCopied': 'Prompt copied',
   'settings.dynamicOcrNote': 'OCR content is added when extraction runs.',
+  'settings.approxTokens': 'About {count} tokens',
   'nav.exportSnapshot': 'Experiment snapshot JSON',
   'nav.exportMachineDetails': 'Full machine-verification details Excel',
   'systemPrompt.title': 'System prompt',
@@ -414,6 +418,7 @@ const en: Record<string, string> = {
   'verification.targetVersion': 'Target version V{version}',
   'verification.baselineV1': 'LLM assertions V1',
   'verification.baselineV2': 'LLM assertions V2',
+  'verification.baselineExecution': 'Assertion execution',
   'verification.baselineUnavailable': 'LLM assertions V{version} are not configured',
   'verification.baselineUnavailableHint': 'This version is unavailable until its corresponding assertion baseline is configured.',
   'verification.baselineHintV1': 'Built in: source consistency and unique artifact IDs. Selected rules are added to this baseline.',
@@ -437,6 +442,23 @@ const en: Record<string, string> = {
   'verification.result': 'Verification Result',
   'verification.needRule': 'Enable at least one verification rule',
   'verification.completed': 'Machine verification completed; V{version} was created',
+  'verification.recheckCompleted': 'Assertion recheck completed: {count} artifacts were reassessed; the human sample was reused',
+  'verification.humanReviewUnavailable': 'The human-review samples cannot be reviewed at this time',
+  'verification.humanReviewOpened': 'Full machine verification completed; {count} human-review samples were created',
+  'verification.humanReviewOpenFailed': 'Unable to open the human-review samples. Refresh the page and try again.',
+  'verification.pausedCanResume': 'Full machine verification is paused. Resume it from the assertions panel.',
+  'verification.sampleCreationFailed': 'Full verification completed, but the {count} human-review samples could not be created: {reason}',
+  'verification.terminatedCanRestart': 'This full machine verification was terminated. You can adjust rules and run it again.',
+  'verification.pausedSaved': 'Full machine verification is paused; completed results have been retained',
+  'verification.resumed': 'Full machine verification resumed',
+  'verification.invalidV1RefreshIncomplete': 'The invalid V1 was submitted for removal, but the page has not refreshed yet. Refresh and confirm.',
+  'verification.invalidV1Cleared': 'The invalid V1 was removed. Check the model service, then run LLM assertions V1 again.',
+  'verification.newExperimentBlocked': 'The current experiment cannot create a new baseline yet.',
+  'verification.experimentReady': '{name} is ready. Run LLM assertions V1 to begin.',
+  'verification.selectCompletedVersion': 'Select a completed verification version first.',
+  'verification.machineDetailsFileName': 'ArchFact-V{version}-machine-verification-details.xlsx',
+  'verification.machineDetailsExported': 'Full machine-verification details for V{version} were exported.',
+  'verification.machineDetailsExportFailed': 'Failed to export full machine-verification details.',
   'verification.aiStarted': 'Human review saved. DeepSeek is comparing independently; it will not overwrite PASS/FAIL.',
   'verification.aiFailed': 'DeepSeek comparison failed',
   'verification.aiConflicts': '{count} human/AI conflicts require review',
@@ -505,6 +527,7 @@ const en: Record<string, string> = {
   'version.relationChanged': '{count} relations changed',
   'version.exportable': 'Ready to export',
   'version.exportBlocked': 'Export blocked',
+  'version.summary': '{rules} effective assertions · {records} full records · {samples} fixed human samples · {matching}',
   'notFound.message': 'Sorry, the page you visited does not exist',
   'notFound.home': 'Back to Home',
   'api.unauthorized': 'Your session has expired. Please sign in again.',
@@ -701,6 +724,9 @@ const zh: Record<string, string> = {
   'home.fileTooLarge': 'PDF 不能超过 {max} MB',
   'home.loaded': '已加载 {name}，共 {count} 页',
   'home.loadFailed': 'PDF 文件加载失败',
+  'home.pdfNotLoaded': 'PDF 文档尚未加载',
+  'home.pdfRenderUnsupported': '当前浏览器不支持 PDF 画布渲染',
+  'home.pagePreviewUnavailable': '当前页面预览图尚未生成',
   'processing.title': '处理进度',
   'processing.noLogs': '暂无处理日志',
   'processing.startTime': '开始时间',
@@ -740,6 +766,7 @@ const zh: Record<string, string> = {
   'settings.copyPrompt': '复制提示词',
   'settings.promptCopied': '提示词已复制',
   'settings.dynamicOcrNote': '实际提取时会注入当前页 OCR 文本与坐标块。',
+  'settings.approxTokens': '约 {count} tokens',
   'nav.exportSnapshot': '实验快照 JSON',
   'nav.exportMachineDetails': '全量机器校验明细 Excel',
   'systemPrompt.title': '系统公共提示词',
@@ -922,6 +949,7 @@ const zh: Record<string, string> = {
   'verification.targetVersion': '当前目标版本 v{version}',
   'verification.baselineV1': 'LLM 断言 V1',
   'verification.baselineV2': 'LLM 断言 V2',
+  'verification.baselineExecution': '断言执行',
   'verification.baselineUnavailable': 'LLM 断言 V{version} 尚未配置',
   'verification.baselineUnavailableHint': '需先配置该版本对应的断言基准，才能执行下一版校验。',
   'verification.baselineHintV1': '内置原文一致性与器物 ID 唯一性；下方选定规则将追加到该基准。',
@@ -945,6 +973,23 @@ const zh: Record<string, string> = {
   'verification.result': '校验结果',
   'verification.needRule': '请至少启用一条校验规则',
   'verification.completed': '机器校验完成，已生成 V{version}',
+  'verification.recheckCompleted': '断言复核完成：{count} 条器物已重新校验，人工样本已复用',
+  'verification.humanReviewUnavailable': '人工核验样本当前不可继续审核',
+  'verification.humanReviewOpened': '全量机器校验完成，已生成 {count} 条人工核验样本',
+  'verification.humanReviewOpenFailed': '人工核验样本未能打开，请刷新后重试。',
+  'verification.pausedCanResume': '全量机器校验已暂停，可在左侧继续执行',
+  'verification.sampleCreationFailed': '全量判断已完成，但{count}条人工核验样本创建失败：{reason}',
+  'verification.terminatedCanRestart': '本次全量机器校验已终止；可修改规则后重新执行',
+  'verification.pausedSaved': '全量机器校验已暂停，已完成的结果会被保留',
+  'verification.resumed': '全量机器校验已继续',
+  'verification.invalidV1RefreshIncomplete': '无效 V1 已提交清除，但页面尚未刷新完成；请刷新页面后确认。',
+  'verification.invalidV1Cleared': '无效 V1 已清除；请检查模型服务后重新执行 LLM 断言 V1。',
+  'verification.newExperimentBlocked': '当前实验尚不能新建下一基线。',
+  'verification.experimentReady': '{name} 已就绪，请执行 LLM 断言 V1',
+  'verification.selectCompletedVersion': '请先选择已完成的校验版本。',
+  'verification.machineDetailsFileName': 'ArchFact-V{version}-全量机器校验明细.xlsx',
+  'verification.machineDetailsExported': 'V{version} 全量机器校验明细已导出。',
+  'verification.machineDetailsExportFailed': '全量机器校验明细导出失败。',
   'verification.aiStarted': '人工核验已保存，正在启动 DeepSeek 人机对照（不会改写 PASS/FAIL）',
   'verification.aiFailed': 'DeepSeek 人机对照失败',
   'verification.aiConflicts': '有 {count} 条人机结论不一致',
@@ -1013,6 +1058,7 @@ const zh: Record<string, string> = {
   'version.relationChanged': '{count} 条关系变化',
   'version.exportable': '可导出',
   'version.exportBlocked': '禁止导出',
+  'version.summary': '{rules} 条有效断言 · {records} 条全量记录 · {samples} 条固定人工样本 · {matching}',
   'notFound.message': '抱歉，您访问的页面不存在',
   'notFound.home': '返回首页',
   'api.unauthorized': '登录已过期，请重新登录。',
@@ -1122,6 +1168,86 @@ export function translate(key: string, params: MessageParams = {}) {
 export function localizeKnownText(value: string) {
   if (localeState.value !== 'zh-CN') return value
   return knownChineseText[value] ?? value
+}
+
+/**
+ * Extraction events are persisted by the backend so a job can be resumed and
+ * inspected later.  Keep the original Chinese event in storage, but render
+ * known event shapes in the active UI language.  This also makes older jobs
+ * created before language switching available in English without data migration.
+ */
+export function localizeProcessingLog(value: string) {
+  if (localeState.value === 'zh-CN') return value
+
+  const direct: Record<string, string> = {
+    '抽取任务已进入队列': 'Extraction task queued',
+    '正在取消抽取任务': 'Cancelling extraction task',
+    '正在解析 PDF 文本层': 'Parsing PDF text layer',
+    '正在建立整本 PDF 轻量页面索引': 'Building lightweight page index for the full PDF',
+    '已启动 OCR 与语义抽取流水线，完成页面将提前进入结构化处理': 'OCR and semantic-extraction pipeline started; completed pages will enter structured processing early',
+    '当前任务覆盖整本 PDF，已跳过重复的跨页候选召回': 'The task covers the full PDF; skipped duplicate cross-page candidate recall',
+    '用户选择页中未识别到明确图号、彩版号或器物编号，跳过跨页召回': 'No explicit figure, plate, or artifact ID was found in the selected pages; skipped cross-page recall',
+    '扫描页 OCR 未识别到有效文字': 'No valid text was recognized by OCR on the scanned page',
+    '抽取任务已立即停止': 'Extraction task stopped immediately',
+  }
+  if (direct[value]) return direct[value]
+
+  let match = value.match(/^正在处理第\s*(\d+)\s*页$/)
+  if (match) return `Processing page ${match[1]}`
+
+  match = value.match(/^第\s*(\d+)\s*页预处理完成(?:，等待语义抽取)?$/)
+  if (match) return `Page ${match[1]} preprocessing completed${value.includes('等待语义抽取') ? '; awaiting semantic extraction' : ''}`
+
+  match = value.match(/^第\s*(\d+)\s*页处理完成$/)
+  if (match) return `Page ${match[1]} processed successfully`
+
+  match = value.match(/^已复用\s*(\d+)\s*页全文发现索引$/)
+  if (match) return `Reused full-document discovery index for ${match[1]} pages`
+
+  match = value.match(/^全文轻量索引完成，共扫描\s*(\d+)\s*页，耗时\s*([\d.]+)s$/)
+  if (match) return `Lightweight full-document index completed: ${match[1]} pages scanned in ${match[2]}s`
+
+  match = value.match(/^已提交失败页恢复任务，仅重新处理\s*(\d+)\s*页：(.*)$/)
+  if (match) return `Recovery task submitted for ${match[1]} failed pages only: ${match[2]}`
+
+  match = value.match(/^全文索引自动召回关联候选页：(.*)$/)
+  if (match) return `Full-document index recalled related candidate pages: ${match[1]}`
+
+  match = value.match(/^第\s*(\d+)\s*页已保存\s*(\d+)\s*个检测区域裁剪图$/)
+  if (match) return `Saved ${match[2]} detected region crops for page ${match[1]}`
+
+  match = value.match(/^第\s*(\d+)\s*页耗时：YOLO\s*([\d.]+)s，区域处理\s*([\d.]+)s，语义抽取\s*([\d.]+)s，合计\s*([\d.]+)s$/)
+  if (match) return `Page ${match[1]} timing: YOLO ${match[2]}s, region processing ${match[3]}s, semantic extraction ${match[4]}s, total ${match[5]}s`
+
+  match = value.match(/^区域关系匹配完成，共生成\s*(\d+)\s*条关系$/)
+  if (match) return `Region relation matching completed: ${match[1]} relations created`
+
+  match = value.match(/^正在融合\s*(\d+)\s*条结构化记录与\s*(\d+)\s*条区域关系$/)
+  if (match) return `Fusing ${match[1]} structured records with ${match[2]} region relations`
+
+  match = value.match(/^结果融合完成，\s*(\d+)\/(\d+)\s*条记录已关联视觉区域$/)
+  if (match) return `Result fusion completed: ${match[1]}/${match[2]} records linked to visual regions`
+
+  match = value.match(/^文档级器物实体归并完成，共生成\s*(\d+)\s*个实体，其中\s*(\d+)\s*个已关联视觉证据$/)
+  if (match) return `Document-level artifact consolidation completed: ${match[1]} entities created, ${match[2]} linked to visual evidence`
+
+  match = value.match(/^抽取结束，共生成\s*(\d+)\s*条记录；成功\s*(\d+)\s*页，失败\s*(\d+)\s*页$/)
+  if (match) return `Extraction completed: ${match[1]} records generated; ${match[2]} pages succeeded, ${match[3]} failed`
+
+  const errorPatterns: Array<[RegExp, (parts: RegExpMatchArray) => string]> = [
+    [/^第\s*(\d+)\s*页 YOLO 检测失败：(.*)$/, (parts) => `YOLO detection failed on page ${parts[1]}: ${parts[2]}`],
+    [/^第\s*(\d+)\s*页语义抽取失败：(.*)$/, (parts) => `Semantic extraction failed on page ${parts[1]}: ${parts[2]}`],
+    [/^第\s*(\d+)\s*页关系匹配失败：(.*)$/, (parts) => `Relation matching failed on page ${parts[1]}: ${parts[2]}`],
+    [/^第\s*(\d+)\s*页预处理失败：(.*)$/, (parts) => `Preprocessing failed on page ${parts[1]}: ${parts[2]}`],
+    [/^第\s*(\d+)\s*页 OCR 未完成：(.*)$/, (parts) => `OCR was incomplete on page ${parts[1]}: ${parts[2]}`],
+    [/^抽取失败：(.*)$/, (parts) => `Extraction failed: ${parts[1]}`],
+  ]
+  for (const [pattern, render] of errorPatterns) {
+    match = value.match(pattern)
+    if (match) return render(match)
+  }
+
+  return value
 }
 
 export function setLocale(locale: AppLocale) {

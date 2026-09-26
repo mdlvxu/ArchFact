@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { nextTick } from 'vue'
 import LanguageToggle from '@/components/business/LanguageToggle.vue'
 import {
+  localizeProcessingLog,
   localizeKnownText,
   setLocale,
   translate,
@@ -41,5 +42,18 @@ describe('界面语言切换', () => {
     expect(translate('nav.inputPdf')).toBe('导入 PDF')
     expect(localizeKnownText(businessData.template.name)).toBe('基础研究模板')
     expect(businessData).toEqual(snapshot)
+  })
+
+  it('在英文界面本地化已保存的后端处理日志，不改写原始日志', () => {
+    const rawLog = '第 12 页预处理完成，等待语义抽取'
+    setLocale('en-US')
+
+    expect(localizeProcessingLog(rawLog)).toBe(
+      'Page 12 preprocessing completed; awaiting semantic extraction',
+    )
+    expect(rawLog).toBe('第 12 页预处理完成，等待语义抽取')
+
+    setLocale('zh-CN')
+    expect(localizeProcessingLog(rawLog)).toBe(rawLog)
   })
 })

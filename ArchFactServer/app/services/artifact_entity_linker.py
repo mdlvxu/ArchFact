@@ -27,6 +27,10 @@ class ArtifactEntityLinker:
     _artifact_identifier = re.compile(
         r"^[A-Z]{1,6}\d+[A-Z]?(?::[A-Z]?\d+[A-Z]?)+$"
     )
+    _embedded_artifact_identifier = re.compile(
+        r"(?<![A-Z0-9])(?:[\u4e00-\u9fff]{1,2})?"
+        r"([A-Z]{1,6}\d+[A-Z]?(?::[A-Z]?\d+[A-Z]?)+)(?![A-Z0-9])"
+    )
 
     def link(
         self,
@@ -309,12 +313,14 @@ class ArtifactEntityLinker:
             identity = linkage.get("identity", {}) if isinstance(linkage, dict) else {}
             if isinstance(identity, dict):
                 value = identity.get("artifact_id_normalized") or identity.get("artifact_id_raw")
-                if value and str(value).strip():
-                    return str(value).strip()
+                normalized = cls._normalize_artifact_identifier(value)
+                if normalized:
+                    return normalized.upper()
             field = record.get("fields", {}).get("artifact_id", {})
             value = field.get("value") if isinstance(field, dict) else None
-            if value and str(value).strip():
-                return str(value).strip()
+            normalized = cls._normalize_artifact_identifier(value)
+            if normalized:
+                return normalized.upper()
         return None
 
     @staticmethod
@@ -393,6 +399,16 @@ class ArtifactEntityLinker:
             unicodedata.normalize("NFKC", str(value)).upper(),
         )
         normalized = cls._tomb_unit_prefix_pattern.sub("", normalized)
-        if not cls._artifact_identifier.fullmatch(normalized):
+        if cls._artifact_identifier.fullmatch(normalized):
+            return normalized.casefold()
+
+        # A type-series graphic can be labelled ``BI(M5:1)``.  Only the
+        # bracketed full identifier may participate in entity identity; BI is
+        # a reusable category/type code and must not create its own entity.
+        embedded = {
+            match.group(1)
+            for match in cls._embedded_artifact_identifier.finditer(normalized)
+        }
+        if len(embedded) != 1:
             return ""
-        return normalized.casefold()
+        return next(iter(embedded)).casefold()

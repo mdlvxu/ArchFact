@@ -142,7 +142,7 @@ watch(
     </div>
     <template v-else-if="preview">
       <div class="template-prompt-preview__meta">
-        约 {{ preview.estimated_tokens }} tokens
+        {{ t('settings.approxTokens', { count: preview.estimated_tokens }) }}
         <span v-if="loading">· {{ t('common.loading') }}</span>
       </div>
       <el-collapse class="template-prompt-preview__collapse" :model-value="['composed']">
