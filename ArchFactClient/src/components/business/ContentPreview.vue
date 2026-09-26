@@ -20,7 +20,6 @@ interface Props {
   relations?: RegionRelation[]
   pagePreviewUrls?: Record<number, string>
   activeAnnotationId?: string
-  relationSaving?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -31,24 +30,15 @@ const props = withDefaults(defineProps<Props>(), {
   relations: () => [],
   pagePreviewUrls: () => ({}),
   activeAnnotationId: '',
-  relationSaving: false,
 })
 const { t } = useI18n()
 
 const emit = defineEmits<{
   selectAnnotation: [annotationId: string]
-  reviewRelation: [relationId: string, status: 'accepted' | 'rejected']
-  rebindRelation: [payload: {
-    relationId: string
-    sourceRegionId: string
-    targetRegionId: string
-    relationType: string
-  }]
 }>()
 
 const zoom = ref(1)
 const linksVisible = ref(true)
-const rebindMode = ref(false)
 const failedTargetImages = ref<Partial<Record<TargetCardKind, boolean>>>({})
 const previewStageRef = ref<HTMLElement>()
 const zoomContentRef = ref<HTMLElement>()
@@ -896,11 +886,6 @@ const displayedRelationGeometries = computed(() => {
     return true
   })
 })
-const activeRelationScore = computed(() =>
-  activeRelation.value?.score === null || activeRelation.value?.score === undefined
-    ? t('preview.manualRelation')
-    : `${Math.round(activeRelation.value.score * 100)}%`,
-)
 
 async function centerPreview(behavior: ScrollBehavior = 'smooth') {
   await nextTick()
@@ -1054,29 +1039,7 @@ function syncPreviewStageSize(element = previewStageRef.value) {
 
 function selectAnnotation(annotationId: string) {
   linksVisible.value = true
-  if (rebindMode.value && activeRelation.value) {
-    const annotation = props.annotations.find((item) => item.id === annotationId)
-    if (!annotation?.regionId || annotation.regionId === activeRelation.value.source_region_id) return
-    emit('rebindRelation', {
-      relationId: activeRelation.value.id,
-      sourceRegionId: activeRelation.value.source_region_id,
-      targetRegionId: annotation.regionId,
-      relationType: activeRelation.value.relation_type,
-    })
-    rebindMode.value = false
-    return
-  }
   emit('selectAnnotation', annotationId)
-}
-
-function reviewActiveRelation(status: 'accepted' | 'rejected') {
-  if (activeRelation.value) emit('reviewRelation', activeRelation.value.id, status)
-}
-
-function toggleRebindMode() {
-  if (!activeRelation.value) return
-  linksVisible.value = true
-  rebindMode.value = !rebindMode.value
 }
 
 function selectTarget(kind: TargetCardKind) {
@@ -1175,7 +1138,6 @@ watch(
   () => {
     finishZoomAnimation()
     zoom.value = 1
-    rebindMode.value = false
     void centerPreview('auto')
   },
 )
@@ -1328,52 +1290,6 @@ onBeforeUnmount(() => {
         <span class="preview-file__meta">
           {{ t('common.page', { page }) }} · {{ zoomText }}
         </span>
-      </div>
-    </div>
-
-    <div
-      v-if="interactive && activeRelation"
-      class="relation-review"
-      :class="{ 'relation-review--rebind': rebindMode }"
-    >
-      <span class="relation-review__type">
-        {{ activeRelation.relation_type.replaceAll('_', ' ') }}
-      </span>
-      <span>{{ t('preview.relationScore') }} {{ activeRelationScore }}</span>
-      <span class="relation-review__status">
-        {{ t(`preview.relationStatus.${activeRelation.review_status}`) }}
-      </span>
-      <span
-        v-if="rebindMode"
-        class="relation-review__hint"
-      >
-        {{ t('preview.rebindHint') }}
-      </span>
-      <div class="relation-review__actions">
-        <button
-          type="button"
-          :class="{ 'relation-review__accepted': activeRelation.review_status === 'accepted' }"
-          :disabled="relationSaving"
-          @click="reviewActiveRelation('accepted')"
-        >
-          {{ t('preview.acceptRelation') }}
-        </button>
-        <button
-          type="button"
-          :class="{ 'relation-review__rejected': activeRelation.review_status === 'rejected' }"
-          :disabled="relationSaving"
-          @click="reviewActiveRelation('rejected')"
-        >
-          {{ t('preview.rejectRelation') }}
-        </button>
-        <button
-          type="button"
-          :class="{ 'relation-review__rebinding': rebindMode }"
-          :disabled="relationSaving"
-          @click="toggleRebindMode"
-        >
-          {{ rebindMode ? t('common.cancel') : t('preview.rebindRelation') }}
-        </button>
       </div>
     </div>
 
@@ -1595,80 +1511,6 @@ onBeforeUnmount(() => {
 .preview-header .panel-title {
   flex: 0 0 auto;
   white-space: nowrap;
-}
-
-.relation-review {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  min-height: 32px;
-  margin: -2px 0 8px;
-  padding: 5px 7px;
-  font-size: 11px;
-  color: #655b52;
-  background: #f8f5f1;
-  border: 1px solid #e5ddd5;
-  border-radius: 6px;
-}
-
-.relation-review--rebind {
-  background: #eef5ff;
-  border-color: #9bbfff;
-}
-
-.relation-review__type {
-  padding: 2px 7px;
-  font-weight: 600;
-  color: #356eb5;
-  text-transform: capitalize;
-  background: #e7f0ff;
-  border-radius: 9px;
-}
-
-.relation-review__status {
-  color: #8a7d71;
-}
-
-.relation-review__hint {
-  color: #356eb5;
-}
-
-.relation-review__actions {
-  display: flex;
-  gap: 5px;
-  margin-left: auto;
-}
-
-.relation-review__actions button {
-  height: 24px;
-  padding: 0 8px;
-  font: inherit;
-  color: #5d554e;
-  cursor: pointer;
-  background: #fff;
-  border: 1px solid #d8d0c8;
-  border-radius: 4px;
-}
-
-.relation-review__actions button:disabled {
-  cursor: wait;
-  opacity: 0.55;
-}
-
-.relation-review__actions .relation-review__accepted {
-  color: #2f8a43;
-  border-color: #70bb80;
-}
-
-.relation-review__actions .relation-review__rejected {
-  color: #c7473e;
-  border-color: #e18b84;
-}
-
-.relation-review__actions .relation-review__rebinding {
-  color: #2868ba;
-  border-color: #79a8e5;
-  background: #edf5ff;
 }
 
 .panel-title {

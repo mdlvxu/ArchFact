@@ -81,6 +81,52 @@ def test_document_entity_groups_non_adjacent_text_drawing_and_color_plate() -> N
     assert output.records[1]["relation_ids"] == ["caption-color"]
 
 
+def test_typology_graphic_label_joins_body_record_by_embedded_artifact_id() -> None:
+    """BI(M5:1) is a type-series label; M5:1 is its only entity identity."""
+
+    linker = ArtifactEntityLinker()
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [74],
+            "linkage": {
+                "identity": {"artifact_id_raw": "BI(M5:1)"},
+                "visual_link": {},
+            },
+            "link_hints": {"artifact_ids": ["BI(M5:1)"]},
+            "fields": {"artifact_id": {"value": "BI(M5:1)"}},
+            "region_ids": ["drawing-m5-1"],
+            "relation_ids": [],
+        },
+        {
+            "record_type": "artifact",
+            "source_pages": [39],
+            "linkage": {
+                "identity": {"artifact_id_normalized": "M5:1"},
+                "visual_link": {},
+            },
+            "link_hints": {"artifact_ids": ["M5:1"]},
+            "fields": {"artifact_id": {"value": "M5:1"}},
+            "region_ids": ["text-m5-1"],
+            "relation_ids": [],
+        },
+    ]
+
+    output = linker.link(
+        job_id="job-typology-label",
+        document_id="doc-typology-label",
+        records=records,
+        regions=[
+            {"id": "drawing-m5-1", "page": 74, "kind": "artifact"},
+            {"id": "text-m5-1", "page": 39, "kind": "text"},
+        ],
+    )
+
+    assert len(output.entities) == 1
+    assert output.entities[0]["canonical_artifact_id"] == "M5:1"
+    assert {record["entity_id"] for record in output.records} == {output.entities[0]["id"]}
+
+
 def test_bare_plate_number_does_not_merge_unrelated_records() -> None:
     linker = ArtifactEntityLinker()
     records = [

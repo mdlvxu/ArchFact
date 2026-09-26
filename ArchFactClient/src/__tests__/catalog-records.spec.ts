@@ -62,7 +62,6 @@ describe('groupCatalogRecordsByEntity', () => {
 
     expect(groupCatalogRecordsByEntity(records).map((item) => item.id)).toEqual([
       'text-record',
-      'unlinked-record',
     ])
   })
 
@@ -87,15 +86,90 @@ describe('groupCatalogRecordsByEntity', () => {
 
   it('does not merge unlinked records merely because their field values match', () => {
     const records = [
-      record('first', 10, null, { artifact_id: field('M1:1', 10) }),
-      record('second', 20, null, { artifact_id: field('M1:1', 20) }),
+      {
+        ...record('first', 10, null, {
+          artifact_id: field('M1:1', 10),
+          morphological_description: field('泥质灰陶罐', 10),
+          measurements: field('口径 12 厘米', 10),
+          texture: field('泥质灰陶', 10),
+        }),
+        associated_pages: [10, 80],
+      },
+      {
+        ...record('second', 20, null, {
+          artifact_id: field('M1:1', 20),
+          morphological_description: field('泥质灰陶罐', 20),
+          measurements: field('口径 12 厘米', 20),
+          texture: field('泥质灰陶', 20),
+        }),
+        associated_pages: [20, 90],
+      },
     ]
 
     expect(groupCatalogRecordsByEntity(records)).toHaveLength(2)
   })
+
+  it('hides single-page cards that never bound a line drawing', () => {
+    const records = [
+      record('id-only', 128, null, { artifact_id: field('M11:66', 128) }),
+      record('caption-only', 142, null, {
+        artifact_id: field('M1:12', 142),
+        figure_caption: field('图三', 142),
+      }),
+      {
+        ...record('with-drawing', 139, 'ent-1', {
+          artifact_id: field('M1:65', 139),
+          morphological_description: field('泥质灰陶', 139),
+        }),
+        thumbnail_region_id: 'artifact-139',
+        primary_artifact_region_id: 'artifact-139',
+      },
+    ]
+
+    expect(groupCatalogRecordsByEntity(records).map((item) => item.id)).toEqual([
+      'with-drawing',
+    ])
+  })
+
+  it('uses the textual sibling of a typology drawing when both share an entity', () => {
+    const records = [
+      {
+        ...record('drawing-bi-m5-1', 74, 'entity-m5-1', {
+          artifact_id: field('BI(M5:1)', 74),
+        }),
+        primary_artifact_region_id: 'drawing-m5-1',
+        thumbnail_region_id: 'drawing-m5-1',
+      },
+      {
+        ...record('text-m5-1', 39, 'entity-m5-1', {
+          artifact_id: field('M5:1', 39),
+        }),
+        text_evidence: [
+          {
+            page: 39,
+            quote: 'M5:1，直口，卷沿，尖圆唇，微鼓腹，盆形器身，浅圈底。',
+            bbox: [0.1, 0.2, 0.9, 0.25] as [number, number, number, number],
+            kind: 'text' as const,
+          },
+        ],
+      },
+    ]
+
+    expect(groupCatalogRecordsByEntity(records).map((item) => item.id)).toEqual([
+      'text-m5-1',
+    ])
+  })
 })
 
 describe('catalog descriptive fallbacks from text evidence', () => {
+  it('does not infer a category from a record without category evidence', () => {
+    const idOnly = record('id-only', 264, null, {
+      artifact_id: field('QFM60:46', 264),
+    })
+
+    expect(catalogCategoryText(idOnly)).toBe('')
+  })
+
   it('surfaces category, texture, and morphology when only the artifact ID was extracted', () => {
     const sparse = {
       ...record('sparse', 88, null, {

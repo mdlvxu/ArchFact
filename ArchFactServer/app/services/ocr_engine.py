@@ -6,7 +6,7 @@ import os
 import shutil
 import subprocess
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -21,6 +21,8 @@ class OcrPageInput:
     width: int
     height: int
     segmentation_mode: int | None = None
+    timeout_seconds: float | None = None
+    max_side: int | None = None
 
 
 @dataclass(slots=True)
@@ -113,7 +115,10 @@ class TesseractOcrEngine:
                 ),
             )
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=180 if page.timeout_seconds is None else page.timeout_seconds,
+                )
             except asyncio.CancelledError:
                 if process.returncode is None:
                     process.kill()
@@ -234,8 +239,6 @@ class PaddleOcrEngine:
 
     enabled = True
     provider = "paddleocr"
-    model = "ch_PP-OCRv4"
-    version = "2.9"
 
     def __init__(
         self,
@@ -244,21 +247,31 @@ class PaddleOcrEngine:
         worker_path: Path,
         language: str,
         use_angle_cls: bool,
+        api_version: str,
+        model: str,
+        version: str,
         min_confidence: float,
         timeout_seconds: float,
         worker_count: int,
         worker_cpu_threads: int,
+        max_side: int = 1600,
+        fallback_max_side: int = 960,
     ) -> None:
         if not python_command.is_file():
             raise ValueError(f"PaddleOCR Python 可执行文件不存在：{python_command}")
         if not worker_path.is_file():
             raise ValueError(f"PaddleOCR 工作进程脚本不存在：{worker_path}")
+        self.model = model
+        self.version = version
         self._python_command = python_command.resolve()
         self._worker_path = worker_path.resolve()
         self._language = language
         self._use_angle_cls = use_angle_cls
+        self._api_version = api_version
         self._min_confidence = min_confidence
         self._timeout_seconds = timeout_seconds
+        self._max_side = max(640, max_side)
+        self._fallback_max_side = max(640, min(self._max_side, fallback_max_side))
         self._worker_count = max(1, worker_count)
         self._worker_cpu_threads = max(1, worker_cpu_threads)
         self._processes: list[asyncio.subprocess.Process | None] = [
@@ -274,15 +287,26 @@ class PaddleOcrEngine:
         for worker_id in range(self._worker_count):
             self._available_workers.put_nowait(worker_id)
         self._close_lock = asyncio.Lock()
+        self._ensure_locks = [asyncio.Lock() for _ in range(self._worker_count)]
         self.config = {
             "adapter": "paddle",
             "language": language,
             "use_angle_cls": use_angle_cls,
+            "api_version": api_version,
+            "model": model,
+            "version": version,
             "min_confidence": min_confidence,
             "timeout_seconds": timeout_seconds,
+            "max_side": self._max_side,
             "worker_count": self._worker_count,
             "worker_cpu_threads": self._worker_cpu_threads,
         }
+
+    async def warmup(self) -> None:
+        """Load models in every worker before the first page timeout starts."""
+        await asyncio.gather(
+            *(self._ensure_process(worker_id) for worker_id in range(self._worker_count))
+        )
 
     async def recognize(self, page: OcrPageInput) -> OcrPageResult:
         if not page.image_path.is_file():
@@ -291,6 +315,44 @@ class PaddleOcrEngine:
                 code=5044,
                 status_code=500,
             )
+        last_error: DomainError | None = None
+        max_sides = self._max_sides_for(page)
+        for index, max_side in enumerate(max_sides):
+            attempt = replace(page, max_side=max_side)
+            try:
+                return await self._recognize_with_crash_retry(attempt)
+            except DomainError as exc:
+                last_error = exc
+                if exc.code != 5046 or index == len(max_sides) - 1:
+                    raise
+        assert last_error is not None
+        raise last_error
+
+    def _max_sides_for(self, page: OcrPageInput) -> list[int]:
+        primary = self._max_side if page.max_side is None else page.max_side
+        sides = [primary]
+        # Crop OCR already uses a short timeout and a small image.
+        if page.timeout_seconds is not None:
+            return sides
+        if self._fallback_max_side < primary:
+            sides.append(self._fallback_max_side)
+        return sides
+
+    async def _recognize_with_crash_retry(self, page: OcrPageInput) -> OcrPageResult:
+        last_error: DomainError | None = None
+        for attempt in range(2):
+            try:
+                return await self._recognize_once(page)
+            except DomainError as exc:
+                last_error = exc
+                # Worker crashes (OOM / killed sibling) are worth one retry on a
+                # fresh process. Timeouts already spent the full budget.
+                if exc.code != 5045 or attempt == 1:
+                    raise
+        assert last_error is not None
+        raise last_error
+
+    async def _recognize_once(self, page: OcrPageInput) -> OcrPageResult:
         worker_id = await self._available_workers.get()
         try:
             process = await self._ensure_process(worker_id)
@@ -300,18 +362,19 @@ class PaddleOcrEngine:
                 "page_no": page.page_no,
                 "image_path": str(page.image_path.resolve()),
                 "use_angle_cls": self._use_angle_cls,
+                "max_side": page.max_side if page.max_side is not None else self._max_side,
             }
             process.stdin.write((json.dumps(request, ensure_ascii=False) + "\n").encode())
             await process.stdin.drain()
-            line = await asyncio.wait_for(
-                process.stdout.readline(),
-                timeout=self._timeout_seconds,
+            payload = await self._read_json_response(
+                process,
+                worker_id,
+                timeout_seconds=(
+                    self._timeout_seconds
+                    if page.timeout_seconds is None
+                    else page.timeout_seconds
+                ),
             )
-            if not line:
-                raise RuntimeError(
-                    self._worker_error(worker_id, "PaddleOCR 工作进程意外退出")
-                )
-            payload = json.loads(line.decode("utf-8"))
             if not payload.get("ok"):
                 raise RuntimeError(str(payload.get("error") or "PaddleOCR 识别失败"))
             blocks = self._normalize_blocks(
@@ -352,21 +415,36 @@ class PaddleOcrEngine:
             )
 
     async def _ensure_process(self, worker_id: int) -> asyncio.subprocess.Process:
-        process = self._processes[worker_id]
-        if process is not None and process.returncode is None:
-            return process
+        async with self._ensure_locks[worker_id]:
+            process = self._processes[worker_id]
+            if process is not None and process.returncode is None:
+                return process
+            return await self._spawn_process(worker_id)
+
+    async def _spawn_process(self, worker_id: int) -> asyncio.subprocess.Process:
         self._stderr_tails[worker_id].clear()
         worker_environment = dict(os.environ)
         worker_environment.update(
             OMP_NUM_THREADS=str(self._worker_cpu_threads),
             MKL_NUM_THREADS=str(self._worker_cpu_threads),
+            PADDLE_PDX_MODEL_SOURCE="bos",
+            PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK="True",
         )
-        process = await asyncio.create_subprocess_exec(
+        worker_command = [
             str(self._python_command),
             "-u",
             str(self._worker_path),
             "--language",
             self._language,
+            "--api-version",
+            self._api_version,
+            "--model",
+            self.model,
+        ]
+        if self._use_angle_cls:
+            worker_command.append("--use-angle-cls")
+        process = await asyncio.create_subprocess_exec(
+            *worker_command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -380,7 +458,28 @@ class PaddleOcrEngine:
             self._stderr_tasks[worker_id] = asyncio.create_task(
                 self._drain_stderr(process.stderr, self._stderr_tails[worker_id])
             )
+        try:
+            await self._wait_until_ready(process, worker_id)
+        except Exception:
+            await self._stop_process(worker_id)
+            raise
         return process
+
+    async def _wait_until_ready(
+        self,
+        process: asyncio.subprocess.Process,
+        worker_id: int,
+    ) -> None:
+        payload = await self._read_json_response(
+            process,
+            worker_id,
+            timeout_seconds=max(120.0, self._timeout_seconds),
+        )
+        if payload.get("ready") is True:
+            return
+        raise RuntimeError(
+            self._worker_error(worker_id, "PaddleOCR 工作进程未进入就绪状态")
+        )
 
     async def _stop_process(self, worker_id: int) -> None:
         process = self._processes[worker_id]
@@ -413,6 +512,38 @@ class PaddleOcrEngine:
     def _worker_error(self, worker_id: int, default: str) -> str:
         tail = self._stderr_tails[worker_id]
         return tail[-1] if tail else default
+
+    async def _read_json_response(
+        self,
+        process: asyncio.subprocess.Process,
+        worker_id: int,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if process.stdout is None:
+            raise RuntimeError("PaddleOCR 工作进程通信通道不可用")
+        deadline = asyncio.get_running_loop().time() + (
+            self._timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError()
+            line = await asyncio.wait_for(process.stdout.readline(), timeout=remaining)
+            if not line:
+                raise RuntimeError(
+                    self._worker_error(worker_id, "PaddleOCR 工作进程意外退出")
+                )
+            text = line.decode("utf-8", errors="replace").strip()
+            if not text or text[0] not in "{[":
+                # Native paddle/oneDNN noise occasionally leaks onto stdout.
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
 
     def _normalize_blocks(
         self,
@@ -469,10 +600,14 @@ def build_ocr_engine(settings: Settings) -> OcrEngine:
             worker_path=settings.paddle_ocr_worker_path,
             language=settings.paddle_ocr_language,
             use_angle_cls=settings.paddle_ocr_use_angle_cls,
+            api_version=settings.paddle_ocr_api_version,
+            model=settings.paddle_ocr_model,
+            version=settings.paddle_ocr_version,
             min_confidence=settings.ocr_min_confidence,
             timeout_seconds=settings.paddle_ocr_timeout_seconds,
             worker_count=settings.paddle_ocr_workers,
             worker_cpu_threads=settings.paddle_ocr_worker_threads,
+            max_side=settings.paddle_ocr_max_side,
         )
     if settings.ocr_adapter == "tesseract":
         return TesseractOcrEngine(

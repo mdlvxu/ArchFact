@@ -17,6 +17,42 @@ from app.services.pdf_parser import PdfParser
 
 PreparationProgress = Callable[[int, int, dict[str, Any]], Awaitable[None]]
 
+# Runtime knobs (workers / timeout / threads) do not change OCR text, so they
+# must not bust the page OCR cache when hardware auto-tune moves.
+_OCR_QUALITY_KEYS = (
+    "adapter",
+    "language",
+    "use_angle_cls",
+    "api_version",
+    "model",
+    "version",
+    "min_confidence",
+    "max_side",
+)
+
+
+def ocr_quality_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {}
+    return {key: config[key] for key in _OCR_QUALITY_KEYS if key in config}
+
+
+def ocr_config_hash(config: dict[str, Any] | None) -> str:
+    payload = ocr_quality_config(config)
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def ocr_prepare_concurrency(ocr_engine: Any, settings: Settings) -> int:
+    """Keep in-flight page OCR at the worker pool size to avoid queue pile-up."""
+    config = getattr(ocr_engine, "config", None)
+    if isinstance(config, dict):
+        workers = config.get("worker_count")
+        if isinstance(workers, int) and workers >= 1:
+            return workers
+    return max(1, settings.paddle_ocr_workers)
+
 
 @dataclass(slots=True)
 class PreparedPdf:
@@ -41,9 +77,7 @@ class PagePreprocessor:
         self._repository = repository
         self._image_storage = image_storage
         self.ocr_engine = ocr_engine
-        self._ocr_config_hash = hashlib.sha256(
-            json.dumps(ocr_engine.config, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:16]
+        self._ocr_config_hash = ocr_config_hash(ocr_engine.config)
 
     async def prepare(
         self,
@@ -53,11 +87,37 @@ class PagePreprocessor:
         selected_pages: list[int] | None,
         on_progress: PreparationProgress | None = None,
     ) -> PreparedPdf:
-        parsed = await self._parser.parse(pdf_path, selected_pages)
+        parsed, (cached_pages, cached_images) = await asyncio.gather(
+            self._parser.parse(pdf_path, selected_pages),
+            self._load_cache(document_id),
+        )
         total = len(parsed.pages)
         processed = 0
+        progress_lock = asyncio.Lock()
         batch_size = max(1, self._settings.page_preparation_batch_size)
-        cached_pages, cached_images = await self._load_cache(document_id)
+        warmup = getattr(self.ocr_engine, "warmup", None)
+        if (
+            callable(warmup)
+            and self.ocr_engine.enabled
+            and self._settings.ocr_policy != "disabled"
+            and any(
+                page.get("status") != "failed"
+                and self._should_apply_ocr(page)
+                and not self._cached_ocr_matches(cached_pages.get(int(page["page_no"])))
+                for page in parsed.pages
+            )
+        ):
+            await warmup()
+
+        async def report_page(page: dict[str, Any]) -> None:
+            nonlocal processed
+            async with progress_lock:
+                processed += 1
+                current = processed
+            if on_progress is not None:
+                await on_progress(current, total, page)
+
+        ocr_slots = asyncio.Semaphore(ocr_prepare_concurrency(self.ocr_engine, self._settings))
 
         for start in range(0, total, batch_size):
             batch = parsed.pages[start : start + batch_size]
@@ -93,20 +153,17 @@ class PagePreprocessor:
             if persist_tasks:
                 await asyncio.gather(*persist_tasks)
 
-            ocr_tasks = [
-                self._apply_ocr(page)
-                for page in batch
-                if page.get("status") != "failed"
-                and self._should_apply_ocr(page)
-                and not page.get("ocr_cache_hit")
-            ]
-            if ocr_tasks:
-                await asyncio.gather(*ocr_tasks)
+            async def prepare_page(page: dict[str, Any]) -> None:
+                if (
+                    page.get("status") != "failed"
+                    and self._should_apply_ocr(page)
+                    and not page.get("ocr_cache_hit")
+                ):
+                    async with ocr_slots:
+                        await self._apply_ocr(page)
+                await report_page(page)
 
-            for page in batch:
-                processed += 1
-                if on_progress is not None:
-                    await on_progress(processed, total, page)
+            await asyncio.gather(*(prepare_page(page) for page in batch))
 
         return PreparedPdf(page_count=parsed.page_count, pages=parsed.pages)
 
@@ -188,13 +245,14 @@ class PagePreprocessor:
         return True
 
     def _cached_ocr_matches(self, cached_page: dict[str, Any] | None) -> bool:
+        # Match the model identity, not timeout/worker counts. Those knobs
+        # change with auto-tune and must not force a 275-page OCR rerun.
         return bool(
             cached_page
             and cached_page.get("ocr_status") == "completed"
             and cached_page.get("ocr_provider") == self.ocr_engine.provider
             and cached_page.get("ocr_model") == self.ocr_engine.model
             and cached_page.get("ocr_version") == self.ocr_engine.version
-            and cached_page.get("ocr_config_hash") == self._ocr_config_hash
             and str(cached_page.get("ocr_text") or "").strip()
             and cached_page.get("ocr_blocks")
         )

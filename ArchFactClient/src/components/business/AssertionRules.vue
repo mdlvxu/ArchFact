@@ -7,14 +7,26 @@ import type { VerificationRule } from '@/types/verification'
 interface Props {
   rules: VerificationRule[]
   running: boolean
+  paused?: boolean
+  terminating?: boolean
+  baselineId?: 'v1' | 'v2' | null
+  targetVersion?: number
+  viewOnly?: boolean
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  baselineId: 'v1',
+  targetVersion: 1,
+  viewOnly: false,
+})
 const { localize, t } = useI18n()
 
 const emit = defineEmits<{
   'update:rules': [rules: VerificationRule[]]
   execute: []
+  pause: []
+  resume: []
+  terminate: []
 }>()
 
 const ruleDialogVisible = ref(false)
@@ -29,7 +41,7 @@ function updateRule(ruleId: number, changes: Partial<VerificationRule>) {
 }
 
 function toggleRule(rule: VerificationRule) {
-  updateRule(rule.id, { enabled: !rule.enabled })
+  updateRule(rule.id, { enabled: !rule.enabled, updated: true })
 }
 
 function removeRule(ruleId: number) {
@@ -51,9 +63,13 @@ function openEditDialog(rule: VerificationRule) {
 
 async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) {
   if (editingRule.value) {
+    const current = props.rules.find((rule) => rule.id === editingRule.value?.id)
+    const changed = Boolean(
+      current && (current.title !== draft.title || current.description !== draft.description),
+    )
     updateRule(editingRule.value.id, {
       ...draft,
-      updated: true,
+      updated: changed || current?.updated,
     })
     return
   }
@@ -63,7 +79,6 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
     id: nextId,
     ...draft,
     enabled: true,
-    updated: true,
   }
   emit('update:rules', [newRule, ...props.rules])
   await nextTick()
@@ -77,16 +92,54 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
       <div>
         <h2>{{ t('verification.assertions') }}</h2>
         <p>{{ t('verification.activeRules', { count: rules.filter((rule) => rule.enabled).length }) }}</p>
+        <div class="baseline-picker">
+          <span>{{ t('verification.targetVersion', { version: targetVersion }) }}</span>
+          <strong v-if="baselineId">
+            {{ baselineId === 'v2' ? t('verification.baselineV2') : t('verification.baselineV1') }}
+          </strong>
+          <strong
+            v-else
+            class="baseline-picker__unavailable"
+          >
+            {{ t('verification.baselineUnavailable', { version: targetVersion }) }}
+          </strong>
+        </div>
+        <p class="baseline-hint">
+          {{ baselineId === 'v2'
+            ? t('verification.baselineHintV2')
+            : baselineId === 'v1'
+              ? t('verification.baselineHintV1')
+              : t('verification.baselineUnavailableHint') }}
+        </p>
       </div>
-      <button
-        type="button"
-        class="execute-button"
-        :disabled="running || !rules.some((rule) => rule.enabled)"
-        @click="emit('execute')"
-      >
-        <span v-if="running" class="execute-spinner" />
-        {{ running ? t('verification.executing') : t('verification.execute') }}
-      </button>
+      <div class="assertion-actions">
+        <button
+          v-if="running && !viewOnly"
+          type="button"
+          class="pause-button"
+          @click="emit('pause')"
+        >
+          {{ t('verification.pause') }}
+        </button>
+        <button
+          v-if="(running || paused) && !viewOnly"
+          type="button"
+          class="terminate-button"
+          :disabled="terminating"
+          @click="emit('terminate')"
+        >
+          {{ terminating ? t('verification.terminating') : t('verification.terminate') }}
+        </button>
+        <button
+          type="button"
+          class="execute-button"
+          :disabled="viewOnly || running || (!paused && (!baselineId || !rules.some((rule) => rule.enabled)))"
+          @click="paused ? emit('resume') : emit('execute')"
+        >
+          <span v-if="running" class="execute-spinner" />
+          {{ running ? t('verification.executing') : (paused ? t('verification.resume') : t('verification.execute')) }}
+        </button>
+      </div>
     </div>
 
     <div
@@ -106,6 +159,7 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
           :class="{ 'rule-toggle--enabled': rule.enabled }"
           :aria-pressed="rule.enabled"
           :aria-label="`${rule.enabled ? t('common.disable') : t('common.enable')} ${localize(rule.title)}`"
+          :disabled="viewOnly"
           @click="toggleRule(rule)"
         >
           <span />
@@ -123,6 +177,7 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
           <button
             type="button"
             :aria-label="`${t('common.edit')} ${localize(rule.title)}`"
+            :disabled="viewOnly"
             @click="openEditDialog(rule)"
           >
             <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -132,6 +187,7 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
           <button
             type="button"
             :aria-label="`${t('common.delete')} ${localize(rule.title)}`"
+            :disabled="viewOnly"
             @click="removeRule(rule.id)"
           >
             <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -144,6 +200,7 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
 
     <button
       type="button"
+      :disabled="viewOnly"
       class="add-rule-button"
       @click="openAddDialog"
     >
@@ -196,6 +253,39 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
   color: var(--af-muted);
 }
 
+.baseline-picker {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--af-muted);
+}
+
+.baseline-picker strong {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #80532d;
+  background: #fffaf5;
+  border: 1px solid #e2c4a4;
+  border-radius: 6px;
+}
+
+.baseline-picker .baseline-picker__unavailable {
+  color: #9b7463;
+  background: #f7f1ed;
+  border-color: #e2d5cc;
+}
+
+.baseline-hint {
+  max-width: 310px;
+  margin-top: 5px !important;
+  font-size: 10px !important;
+  line-height: 1.4;
+  color: #9a7b5d !important;
+}
+
 .execute-button {
   display: flex;
   gap: 7px;
@@ -211,6 +301,47 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
   border: 0;
   border-radius: 8px;
   box-shadow: 0 3px 7px rgb(142 66 14 / 20%);
+}
+
+.assertion-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.pause-button {
+  height: 34px;
+  padding: 0 12px;
+  font-size: var(--af-font-body);
+  color: #8b572a;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #d9b48c;
+  border-radius: 8px;
+}
+
+.pause-button:hover {
+  background: #fff4e8;
+}
+
+.terminate-button {
+  height: 34px;
+  padding: 0 12px;
+  font-size: var(--af-font-body);
+  color: #b23a31;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #e3a19b;
+  border-radius: 8px;
+}
+
+.terminate-button:hover:not(:disabled) {
+  background: #fff1ef;
+}
+
+.terminate-button:disabled {
+  cursor: wait;
+  opacity: .65;
 }
 
 .execute-button:disabled {
@@ -300,6 +431,13 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
 
 .rule-toggle--enabled {
   background: #a45117;
+}
+
+.rule-toggle:disabled,
+.rule-actions button:disabled,
+.add-rule-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .rule-toggle--enabled span {

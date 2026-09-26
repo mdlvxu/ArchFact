@@ -1,40 +1,28 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from '@/i18n'
-import type { LabelConstraintType } from '@/types/extraction'
 
 interface Props {
   label: string
-  modelValue: LabelConstraintType
   required: boolean
   instruction: string
+  defaultInstruction?: string
 }
 
-defineProps<Props>()
-const { t, localize } = useI18n()
+const props = defineProps<Props>()
+const { t } = useI18n()
 
 const emit = defineEmits<{
-  'update:modelValue': [value: LabelConstraintType]
-  'update:required': [value: boolean]
   'update:instruction': [value: string]
 }>()
-
-const constraintTypes: LabelConstraintType[] = [
-  'Num',
-  'Text',
-  'Date',
-  'Yes/No',
-  'Image',
-  'Obj',
-  'Arr',
-]
 
 const isOpen = ref(false)
 const menuRef = ref<HTMLElement>()
 const menuPosition = ref({ top: 0, left: 0 })
+const instructionDraft = ref('')
 
-const MENU_WIDTH = 260
-const MENU_HEIGHT = 470
+const MENU_WIDTH = 390
+const MENU_HEIGHT = 360
 const VIEWPORT_GAP = 12
 const TARGET_GAP = 8
 
@@ -60,6 +48,12 @@ function updateMenuPosition(target: HTMLElement) {
   }
 }
 
+const isCustomized = computed(() => {
+  const instruction = props.instruction.trim()
+  const defaultInstruction = (props.defaultInstruction || '').trim()
+  return Boolean(instruction && instruction !== defaultInstruction)
+})
+
 async function toggleMenu(event: MouseEvent) {
   if (isOpen.value) {
     closeMenu()
@@ -67,15 +61,24 @@ async function toggleMenu(event: MouseEvent) {
   }
 
   updateMenuPosition(event.currentTarget as HTMLElement)
+  instructionDraft.value = props.instruction
   isOpen.value = true
   globalThis.addEventListener('resize', closeMenu)
   await nextTick()
   menuRef.value?.focus()
 }
 
-function selectType(type: LabelConstraintType) {
-  emit('update:modelValue', type)
+function saveInstruction() {
+  emit('update:instruction', instructionDraft.value.trim())
   closeMenu()
+}
+
+function restoreDefaultInstruction() {
+  if (props.defaultInstruction) instructionDraft.value = props.defaultInstruction
+}
+
+function estimatedTokens(value: string) {
+  return Math.max(1, Math.ceil(value.length * 1.15))
 }
 
 function closeMenu() {
@@ -91,13 +94,16 @@ onBeforeUnmount(closeMenu)
     class="constraint-trigger"
     :class="{ 'constraint-trigger--open': isOpen }"
     type="button"
-    aria-haspopup="listbox"
+    aria-haspopup="dialog"
     :aria-expanded="isOpen"
-    :aria-label="t('constraint.type', { label, type: localize(modelValue) })"
+    :aria-label="`${t('constraint.editPrompt')}：${label}（${isCustomized ? t('constraint.customizedPrompt') : t('constraint.defaultState')}）`"
+    :title="t('constraint.editPrompt')"
     @click="toggleMenu"
   >
-    <span>{{ localize(modelValue) }}</span>
-    <b aria-hidden="true">›</b>
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="m4 14.8 1.1-3.7L13.7 2.5a1.8 1.8 0 0 1 2.5 2.5l-8.6 8.6L4 14.8Z" />
+      <path d="m11.9 4.3 2.5 2.5M4 14.8l3.6-1.2" />
+    </svg>
   </button>
 
   <Teleport to="body">
@@ -115,88 +121,40 @@ onBeforeUnmount(closeMenu)
           left: `${menuPosition.left}px`,
         }"
         tabindex="-1"
-        role="listbox"
-        :aria-label="t('settings.constraints')"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('constraint.editPrompt')"
         @keydown.esc="closeMenu"
       >
-        <h3>{{ t('settings.constraints') }}</h3>
-        <button
-          v-for="type in constraintTypes"
-          :key="type"
-          class="constraint-option"
-          :class="{ 'constraint-option--active': type === modelValue }"
-          type="button"
-          role="option"
-          :aria-selected="type === modelValue"
-          @click="selectType(type)"
-        >
-          <svg
-            class="constraint-option__icon"
-            viewBox="0 0 20 20"
-            aria-hidden="true"
-          >
-            <template v-if="type === 'Num'">
-              <path d="M3.5 16.5V11m4 5.5V5m4 11.5V8m4 8.5V3.5" />
-            </template>
-            <template v-else-if="type === 'Text'">
-              <path d="M5 2.8h6.5l3.5 3.5v10.9H5z" />
-              <path d="M11.5 2.8v3.5H15M7.5 9h5M7.5 12h5M7.5 15h3.5" />
-            </template>
-            <template v-else-if="type === 'Date'">
-              <rect x="3" y="4.5" width="14" height="12" rx="1.5" />
-              <path d="M6.5 2.5v4M13.5 2.5v4M3 8h14M6.5 11h.1M10 11h.1M13.5 11h.1M6.5 14h.1M10 14h.1" />
-            </template>
-            <template v-else-if="type === 'Yes/No'">
-              <circle cx="10" cy="10" r="7" />
-              <path d="m6.8 10 2.1 2.2 4.5-5" />
-            </template>
-            <template v-else-if="type === 'Image'">
-              <rect x="3" y="3.5" width="14" height="13" rx="1.5" />
-              <circle cx="7" cy="7.5" r="1.5" />
-              <path d="m4.5 15 4.2-4.4 2.5 2.3 2-2 3.3 3.4" />
-            </template>
-            <template v-else-if="type === 'Obj'">
-              <circle
-                v-for="point in 9"
-                :key="point"
-                :cx="4 + ((point - 1) % 3) * 6"
-                :cy="4 + Math.floor((point - 1) / 3) * 6"
-                r="1.1"
-              />
-            </template>
-            <template v-else>
-              <path d="M7 5h10M7 10h10M7 15h10" />
-              <circle cx="3.5" cy="5" r=".8" />
-              <circle cx="3.5" cy="10" r=".8" />
-              <circle cx="3.5" cy="15" r=".8" />
-            </template>
-          </svg>
-          <span>{{ localize(type) }}</span>
-          <b
-            v-if="type === modelValue"
-            aria-hidden="true"
-          >✓</b>
-        </button>
-
         <div class="constraint-details">
-          <label class="constraint-required">
-            <input
-              type="checkbox"
-              :checked="required"
-              @change="emit('update:required', ($event.target as HTMLInputElement).checked)"
-            >
-            {{ t('common.required') }}
-          </label>
+          <header class="constraint-details__header">
+            <div>
+              <h3>{{ label }}</h3>
+              <p>{{ t('constraint.fieldHint') }}</p>
+            </div>
+            <span>{{ required ? t('constraint.requiredField') : t('constraint.optionalField') }}</span>
+          </header>
           <label class="constraint-instruction">
             <span>{{ t('constraint.instruction') }}</span>
             <textarea
-              :value="instruction"
-              maxlength="500"
+              v-model="instructionDraft"
+              maxlength="1200"
               :placeholder="t('constraint.instructionPlaceholder')"
-              @input="emit('update:instruction', ($event.target as HTMLTextAreaElement).value)"
+              @click.stop
             />
+            <small>{{ t('constraint.promptLength', { count: instructionDraft.length, max: 1200, tokens: estimatedTokens(instructionDraft) }) }}</small>
           </label>
+          <footer class="constraint-details__actions">
+            <button type="button" :disabled="!defaultInstruction" @click="restoreDefaultInstruction">
+              {{ t('constraint.defaultPrompt') }}
+            </button>
+            <div>
+              <button type="button" @click="closeMenu">{{ t('common.cancel') }}</button>
+              <button type="button" class="constraint-details__save" @click="saveInstruction">{{ t('constraint.savePrompt') }}</button>
+            </div>
+          </footer>
         </div>
+
       </section>
     </div>
   </Teleport>
@@ -205,32 +163,36 @@ onBeforeUnmount(closeMenu)
 <style scoped lang="scss">
 .constraint-trigger {
   display: flex;
-  gap: 7px;
   align-items: center;
-  justify-content: flex-end;
-  min-width: 68px;
-  min-height: 32px;
-  padding: 5px 9px;
-  font-size: var(--af-font-body);
-  color: #665f59;
+  justify-content: center;
+  width: 29px;
+  min-width: 29px;
+  height: 29px;
+  min-height: 29px;
+  padding: 0;
+  color: #8a6650;
   cursor: pointer;
-  background: #f7f8fa;
-  border: 1px solid transparent;
-  border-radius: 10px;
+  background: transparent;
+  border: 1px solid #eadfd4;
+  border-radius: 7px;
   transition: 160ms ease;
 }
 
 .constraint-trigger:hover,
 .constraint-trigger--open {
   color: #914b20;
-  background: #fff7ee;
+  background: #fff1e3;
   border-color: #e5c8aa;
 }
 
-.constraint-trigger b {
-  font-size: 21px;
-  font-weight: 400;
-  line-height: 0.8;
+.constraint-trigger svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.45;
 }
 
 .constraint-menu-layer {
@@ -243,8 +205,9 @@ onBeforeUnmount(closeMenu)
 .constraint-type-menu {
   position: fixed;
   z-index: 3000;
-  width: 260px;
-  padding: 8px 0 7px;
+  width: 360px;
+  max-height: calc(100vh - 24px);
+  padding: 0;
   overflow: hidden;
   color: #332f2c;
   background: #fffcf8;
@@ -256,35 +219,27 @@ onBeforeUnmount(closeMenu)
 
 .constraint-details {
   display: grid;
-  gap: 9px;
-  padding: 10px 16px 4px;
-  border-top: 1px solid #eee1d5;
+  gap: 11px;
+  padding: 16px;
 }
 
-.constraint-required {
+.constraint-details__header {
   display: flex;
-  gap: 7px;
-  align-items: center;
-  font-size: 12px;
-  color: #5c5149;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.constraint-required input {
-  accent-color: #a45117;
-}
+.constraint-details__header h3 { margin: 0 0 3px; font-size: 16px; color: #45382f; }
+.constraint-details__header p { margin: 0; font-size: 12px; line-height: 1.45; color: #897568; }
+.constraint-details__header span { flex: 0 0 auto; padding: 3px 7px; font-size: 11px; color: #9a633d; background: #fff0df; border-radius: 99px; }
 
-.constraint-instruction {
-  display: grid;
-  gap: 5px;
-  font-size: 11px;
-  color: #7a6d63;
-}
-
+.constraint-instruction { display: grid; gap: 5px; font-size: 12px; color: #715d4e; }
 .constraint-instruction textarea {
-  min-height: 70px;
-  padding: 7px;
+  min-height: 142px;
+  padding: 8px;
   font: inherit;
-  line-height: 1.35;
+  line-height: 1.5;
   color: #4f4640;
   resize: vertical;
   outline: none;
@@ -292,59 +247,21 @@ onBeforeUnmount(closeMenu)
   border: 1px solid #decab7;
   border-radius: 6px;
 }
+.constraint-instruction textarea:focus { border-color: #bd6535; box-shadow: 0 0 0 3px rgb(189 101 53 / 10%); }
+.constraint-instruction small { font-size: 11px; color: #967d6a; text-align: right; }
 
-.constraint-instruction textarea:focus {
-  border-color: #bd6535;
-}
-
-.constraint-type-menu h3 {
-  padding: 0 21px 9px;
-  margin: 0;
-  font-size: var(--af-font-section-title);
-  font-weight: 600;
-}
-
-.constraint-option {
-  display: grid;
-  grid-template-columns: 24px 1fr 18px;
-  gap: 4px;
-  align-items: center;
-  width: 100%;
-  min-height: 39px;
-  padding: 6px 16px;
-  font-size: var(--af-font-body);
-  color: #3d3732;
-  text-align: left;
+.constraint-details__actions, .constraint-details__actions > div { display: flex; gap: 8px; align-items: center; }
+.constraint-details__actions { justify-content: space-between; }
+.constraint-details__actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: #8d542e;
   cursor: pointer;
-  background: transparent;
-  border: 0;
-  transition: background-color 140ms ease;
+  background: #fff8f1;
+  border: 1px solid #e4c7af;
+  border-radius: 6px;
 }
-
-.constraint-option:hover,
-.constraint-option--active {
-  background: #f8eee5;
-}
-
-.constraint-option b {
-  font-size: 16px;
-  font-weight: 500;
-  color: #bd6535;
-}
-
-.constraint-option__icon {
-  width: 17px;
-  height: 17px;
-  overflow: visible;
-  fill: none;
-  stroke: #bd6535;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.15;
-}
-
-.constraint-option__icon circle[r='1.1'] {
-  fill: #bd6535;
-  stroke: none;
-}
+.constraint-details__actions button:disabled { color: #b7aaa0; cursor: not-allowed; background: #f5f2ef; border-color: #e5dfda; }
+.constraint-details__actions .constraint-details__save { color: #fff; background: #a9501a; border-color: #a9501a; }
 </style>

@@ -49,6 +49,8 @@ REGION_CROP_PADDING=0.01
 RELATION_GROUP_CONTAINMENT_THRESHOLD=0.5
 ```
 
+`YOLO_DEVICE` 在默认的硬件自适应开启时按本机选择：有 NVIDIA GPU 用 `0`，否则 `cpu`。要钉死某张卡或强制 CPU，设 `HARDWARE_AUTO_TUNE=false`。
+
 首版只启动一个 Uvicorn worker。适配器内部使用异步锁串行调用同一个模型实例，避免多个抽取任务并发访问同一 GPU 模型。
 
 ```powershell

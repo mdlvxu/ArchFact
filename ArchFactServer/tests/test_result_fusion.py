@@ -1644,6 +1644,171 @@ def test_fusion_does_not_treat_bare_list_number_as_artifact_identifier() -> None
     assert "artifact-m3-4" not in record["region_ids"]
 
 
+def test_fusion_does_not_bind_caption_item_list_to_different_full_crop_identifier() -> None:
+    """A shared caption list such as 6、10 cannot claim the crop M16:10."""
+
+    service = ResultFusionService()
+    config = ExtractionConfig(
+        template_id="custom",
+        template_name="Custom",
+        fields=[ExtractionFieldSpec(key="artifact_id", label="Artifact ID", type="string")],
+    )
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [44],
+            "fields": {
+                "artifact_id": {
+                    "value": "6、10",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 44,
+                            "quote": "1-5、11，石镞（11号锥名5号下）6、10，玉环",
+                            "bbox": [0.1, 0.7, 0.8, 0.76],
+                            "region_id": "text-44",
+                        }
+                    ],
+                },
+                "figure_caption": {
+                    "value": "图3-4A M3平、剖面图",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 44,
+                            "quote": "图3-4A M3平、剖面图",
+                            "bbox": [0.1, 0.62, 0.8, 0.68],
+                            "region_id": "text-44",
+                        }
+                    ],
+                },
+            },
+            "link_hints": {
+                "artifact_ids": ["6、10"],
+                "figure_refs": ["图3-4A"],
+                "figure_item_nos": ["6", "10"],
+                "caption_texts": ["图3-4A M3平、剖面图 1-5、11，石镞；6、10，玉环"],
+                "plate_refs": [],
+                "aliases": [],
+            },
+        }
+    ]
+    regions = [
+        {"id": "text-44", "page": 44, "kind": "text", "bbox": [0.1, 0.7, 0.8, 0.76]},
+        {
+            "id": "caption-145",
+            "page": 145,
+            "kind": "caption",
+            "text": "图3-4A M3平、剖面图 1-5、11，石镞；6、10，玉环",
+        },
+        {"id": "number-m16-10", "page": 145, "kind": "number", "text": "M16:10"},
+        {
+            "id": "artifact-m16-10",
+            "page": 145,
+            "kind": "artifact",
+            "crop_object_key": "documents/demo/pages/0145/crops/artifact/m16-10.png",
+        },
+    ]
+    relations = [
+        {
+            "id": "caption-number-m16-10",
+            "source_region_id": "caption-145",
+            "target_region_id": "number-m16-10",
+            "relation_type": "caption_to_number",
+        },
+        {
+            "id": "number-artifact-m16-10",
+            "source_region_id": "number-m16-10",
+            "target_region_id": "artifact-m16-10",
+            "relation_type": "number_of",
+        },
+    ]
+
+    output = service.fuse(
+        job_id="job-caption-list-vs-id",
+        records=records,
+        regions=regions,
+        relations=relations,
+        config=config,
+        model_run_id="run-caption-list-vs-id",
+    )
+
+    record = output.records[0]
+    assert record["primary_number_region_id"] is None
+    assert record["primary_artifact_region_id"] is None
+    assert record["thumbnail_region_id"] is None
+    assert "number-m16-10" not in record["region_ids"]
+    assert "artifact-m16-10" not in record["region_ids"]
+
+
+def test_fusion_treats_lone_site_id_as_context_not_a_visual_artifact() -> None:
+    service = ResultFusionService()
+    config = ExtractionConfig(
+        template_id="basic-research",
+        template_name="Basic Research",
+        fields=[
+            ExtractionFieldSpec(key="site_id", label="Site", type="string"),
+            ExtractionFieldSpec(key="sequence_no", label="Sequence", type="string"),
+        ],
+    )
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [46],
+            "fields": {
+                "site_id": {
+                    "value": "M14",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 46,
+                            "quote": "M14 位于T0402西部",
+                            "bbox": [0.1, 0.2, 0.6, 0.25],
+                            "region_id": "text-m14",
+                        }
+                    ],
+                },
+                "sequence_no": {"value": None, "status": "missing", "evidence": []},
+            },
+            "link_hints": {"artifact_ids": ["M14"], "figure_refs": [], "figure_item_nos": []},
+        }
+    ]
+    regions = [
+        {"id": "text-m14", "page": 46, "kind": "text", "bbox": [0.1, 0.2, 0.6, 0.25]},
+        {"id": "number-m1-40", "page": 145, "kind": "number", "text": "M1:40"},
+        {
+            "id": "artifact-m1-40",
+            "page": 145,
+            "kind": "artifact",
+            "crop_object_key": "documents/demo/pages/0145/crops/artifact/m1-40.png",
+        },
+    ]
+    relations = [
+        {
+            "id": "number-artifact-m1-40",
+            "source_region_id": "number-m1-40",
+            "target_region_id": "artifact-m1-40",
+            "relation_type": "number_of",
+        }
+    ]
+
+    output = service.fuse(
+        job_id="job-lone-site-id",
+        records=records,
+        regions=regions,
+        relations=relations,
+        config=config,
+        model_run_id="run-lone-site-id",
+    )
+
+    record = output.records[0]
+    assert record["fusion_status"] == "unlinked"
+    assert record["primary_artifact_region_id"] is None
+    assert record["thumbnail_region_id"] is None
+    assert "number-m1-40" not in record["region_ids"]
+    assert "artifact-m1-40" not in record["region_ids"]
+
+
 def test_fusion_keeps_multiple_strong_matches_across_distant_pages() -> None:
     service = ResultFusionService()
     config = ExtractionConfig(
@@ -2597,6 +2762,40 @@ def test_normalize_strips_tomb_unit_prefix_from_plate_caption_ids() -> None:
     assert ResultFusionService._normalize_artifact_identifier("仲M4:3") == "M4:3"
     assert ResultFusionService._normalize_artifact_identifier("仲M4：3") == "M4:3"
     assert ResultFusionService._normalize_artifact_identifier("M4:3") == "M4:3"
+    assert ResultFusionService._normalize_artifact_identifier("BI(M5:1)") == "M5:1"
+    assert ResultFusionService._normalize_artifact_identifier("AⅡ(M15:6)") == "M15:6"
+
+
+def test_fusion_prefers_nearby_typology_label_over_distant_exact_duplicate() -> None:
+    service = ResultFusionService()
+    record = {
+        "source_pages": [39],
+        "fields": {"artifact_id": {"value": "M5:1", "raw_value": "M5:1"}},
+        "linkage": {"identity": {"artifact_id_normalized": "M5:1"}},
+        "link_hints": {"artifact_ids": ["M5:1"]},
+    }
+    nearby = {
+        "id": "number-bi-m5-1",
+        "page": 40,
+        "kind": "number",
+        "text": "BI(M5:1)",
+    }
+    distant = {
+        "id": "number-index-m5-1",
+        "page": 174,
+        "kind": "number",
+        "text": "M5:1",
+    }
+
+    selected = service._prefer_nearby_exact_identifier_matches(
+        record=record,
+        selected_matches={
+            nearby["id"]: (0.99, "artifact_ids", nearby),
+            distant["id"]: (0.99, "artifact_ids", distant),
+        },
+    )
+
+    assert list(selected) == ["number-bi-m5-1"]
 
 
 def test_absorb_drops_sparse_color_plate_caption_cards() -> None:
@@ -2830,3 +3029,340 @@ def test_absorb_drops_orphan_color_plate_caption_without_body() -> None:
     )
 
     assert output.records == []
+
+
+def test_v22_fusion_keeps_sparse_single_page_record_without_line_drawing() -> None:
+    """V22 preserves extracted records; it does not apply sparse-card filtering."""
+
+    service = ResultFusionService()
+    missing = {
+        "raw_value": None,
+        "value": None,
+        "status": "missing",
+        "evidence": [],
+    }
+    config = ExtractionConfig(
+        template_id="basic",
+        template_name="Basic",
+        fields=[
+            ExtractionFieldSpec(key="artifact_id", label="Artifact ID", type="string"),
+            ExtractionFieldSpec(key="category", label="Category", type="string"),
+            ExtractionFieldSpec(key="texture", label="Texture", type="string"),
+            ExtractionFieldSpec(key="measurements", label="Measurements", type="string"),
+            ExtractionFieldSpec(
+                key="morphological_description",
+                label="Morphology",
+                type="string",
+            ),
+            ExtractionFieldSpec(key="figure_caption", label="Caption", type="string"),
+        ],
+    )
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [256],
+            "fields": {
+                "artifact_id": {
+                    "raw_value": "采:1",
+                    "value": "采:1",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 256,
+                            "quote": "采:1",
+                            "bbox": [0.08, 0.18, 0.16, 0.22],
+                            "region_id": "text-256-id",
+                            "kind": "text",
+                        }
+                    ],
+                },
+                "category": {
+                    "raw_value": "钛",
+                    "value": "钛",
+                    "status": "valid",
+                    "evidence": [],
+                },
+                "texture": {
+                    "raw_value": "斑状岩",
+                    "value": "斑状岩",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 256,
+                            "quote": "斑状岩",
+                            "bbox": [0.42, 0.18, 0.52, 0.22],
+                            "region_id": "text-256-texture",
+                            "kind": "text",
+                        }
+                    ],
+                },
+                "surface_color": dict(missing),
+                "measurements": dict(missing),
+                "completeness": dict(missing),
+                "morphological_description": {
+                    "raw_value": "长石斑晶呈板状,肉红色,石英斑点浑圆状,含量约10%.",
+                    "value": "长石斑晶呈板状,肉红色,石英斑点浑圆状,含量约10%.",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 256,
+                            "quote": "长石斑晶呈板状",
+                            "bbox": [0.2, 0.3, 0.8, 0.34],
+                            "region_id": "text-256-morph",
+                            "kind": "text",
+                        }
+                    ],
+                },
+                "figure_caption": dict(missing),
+            },
+            "warnings": ["字段 morphological_description 的一条证据无法定位到 OCR 原文"],
+        }
+    ]
+    regions = [
+        {
+            "id": "text-256-id",
+            "page": 256,
+            "kind": "text",
+            "bbox": [0.08, 0.18, 0.16, 0.22],
+            "text": "采:1",
+        },
+        {
+            "id": "text-256-texture",
+            "page": 256,
+            "kind": "text",
+            "bbox": [0.42, 0.18, 0.52, 0.22],
+            "text": "斑状岩",
+        },
+        {
+            "id": "text-256-morph",
+            "page": 256,
+            "kind": "text",
+            "bbox": [0.2, 0.3, 0.8, 0.34],
+            "text": "长石斑晶呈板状,肉红色,石英斑点浑圆状,含量约10%.",
+        },
+    ]
+
+    output = service.fuse(
+        job_id="job-sparse-no-drawing",
+        records=records,
+        regions=regions,
+        relations=[],
+        config=config,
+        model_run_id="run-sparse-no-drawing",
+    )
+
+    assert len(output.records) == 1
+
+
+def test_v22_fusion_keeps_caption_only_single_page_record_without_line_drawing() -> None:
+    service = ResultFusionService()
+    missing = {
+        "raw_value": None,
+        "value": None,
+        "status": "missing",
+        "evidence": [],
+    }
+    config = ExtractionConfig(
+        template_id="basic",
+        template_name="Basic",
+        fields=[
+            ExtractionFieldSpec(key="artifact_id", label="Artifact ID", type="string"),
+            ExtractionFieldSpec(key="figure_caption", label="Caption", type="string"),
+        ],
+    )
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [142],
+            "fields": {
+                "artifact_id": {
+                    "raw_value": "M1:12",
+                    "value": "M1:12",
+                    "status": "valid",
+                    "evidence": [],
+                },
+                "figure_caption": {
+                    "raw_value": "图三",
+                    "value": "图三",
+                    "status": "valid",
+                    "evidence": [],
+                },
+                "measurements": dict(missing),
+            },
+        }
+    ]
+
+    output = service.fuse(
+        job_id="job-caption-only",
+        records=records,
+        regions=[],
+        relations=[],
+        config=config,
+        model_run_id="run-caption-only",
+    )
+
+    assert len(output.records) == 1
+
+
+def test_v22_fusion_keeps_identity_only_single_page_record_without_line_drawing() -> None:
+    service = ResultFusionService()
+    config = ExtractionConfig(
+        template_id="basic",
+        template_name="Basic",
+        fields=[
+            ExtractionFieldSpec(key="artifact_id", label="Artifact ID", type="string"),
+        ],
+    )
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [128],
+            "fields": {
+                "artifact_id": {
+                    "raw_value": "M11:66",
+                    "value": "M11:66",
+                    "status": "valid",
+                    "evidence": [],
+                }
+            },
+        }
+    ]
+
+    output = service.fuse(
+        job_id="job-id-only",
+        records=records,
+        regions=[],
+        relations=[],
+        config=config,
+        model_run_id="run-id-only",
+    )
+
+    assert len(output.records) == 1
+
+
+def test_v22_fusion_keeps_sparse_record_when_line_drawing_is_linked() -> None:
+    service = ResultFusionService()
+    missing = {
+        "raw_value": None,
+        "value": None,
+        "status": "missing",
+        "evidence": [],
+    }
+    config = ExtractionConfig(
+        template_id="basic",
+        template_name="Basic",
+        fields=[
+            ExtractionFieldSpec(key="artifact_id", label="Artifact ID", type="string"),
+            ExtractionFieldSpec(key="texture", label="Texture", type="string"),
+            ExtractionFieldSpec(key="figure_caption", label="Caption", type="string"),
+        ],
+    )
+    records = [
+        {
+            "record_type": "artifact",
+            "source_pages": [12],
+            "link_hints": {
+                "artifact_ids": ["M2:4"],
+                "figure_refs": ["图12"],
+            },
+            "fields": {
+                "artifact_id": {
+                    "value": "M2:4",
+                    "status": "valid",
+                    "evidence": [
+                        {
+                            "page": 12,
+                            "quote": "M2:4",
+                            "bbox": [0.1, 0.7, 0.2, 0.74],
+                            "region_id": "text-12",
+                        }
+                    ],
+                },
+                "texture": {
+                    "value": "泥质灰陶",
+                    "status": "valid",
+                    "evidence": [],
+                },
+                "figure_caption": dict(missing),
+                "measurements": dict(missing),
+            },
+        }
+    ]
+    regions = [
+        {
+            "id": "text-12",
+            "page": 12,
+            "kind": "text",
+            "bbox": [0.1, 0.7, 0.2, 0.74],
+            "text": "M2:4",
+        },
+        {
+            "id": "caption-40",
+            "page": 40,
+            "kind": "caption",
+            "bbox": [0.2, 0.82, 0.6, 0.88],
+            "text": "图12 M2出土陶器",
+        },
+        {
+            "id": "number-40",
+            "page": 40,
+            "kind": "number",
+            "bbox": [0.22, 0.4, 0.28, 0.44],
+            "text": "M2:4",
+            "crop_object_key": "documents/demo/pages/0040/crops/number/m2-4.png",
+        },
+        {
+            "id": "drawing-40",
+            "page": 40,
+            "kind": "line_drawing",
+            "bbox": [0.2, 0.1, 0.55, 0.4],
+            "crop_object_key": "documents/demo/pages/0040/crops/line_drawing/m2-4.png",
+        },
+    ]
+    relations = [
+        {
+            "id": "caption-to-number",
+            "source_region_id": "caption-40",
+            "target_region_id": "number-40",
+            "relation_type": "caption_to_number",
+            "score": 0.9,
+            "method": "caption_ocr_scope",
+            "version": "1",
+            "review_status": "unreviewed",
+        },
+        {
+            "id": "number-of-drawing",
+            "source_region_id": "number-40",
+            "target_region_id": "drawing-40",
+            "relation_type": "number_of",
+            "score": 0.92,
+            "method": "global_assignment",
+            "version": "1",
+            "review_status": "unreviewed",
+        },
+        {
+            "id": "drawing-of-artifact",
+            "source_region_id": "drawing-40",
+            "target_region_id": "drawing-40",
+            "relation_type": "drawing_of",
+            "score": 0.88,
+            "method": "global_assignment",
+            "version": "1",
+            "review_status": "unreviewed",
+        },
+    ]
+
+    output = service.fuse(
+        job_id="job-sparse-with-drawing",
+        records=records,
+        regions=regions,
+        relations=relations,
+        config=config,
+        model_run_id="run-sparse-with-drawing",
+    )
+
+    assert len(output.records) == 1
+    record = output.records[0]
+    assert "drawing-40" in record["region_ids"]
+    assert 40 in record["associated_pages"]
+    assert 12 in record["associated_pages"]

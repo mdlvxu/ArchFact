@@ -6,6 +6,7 @@ import type { VerificationReport } from '@/types/verification'
 interface Props {
   report: VerificationReport
   running: boolean
+  progressText?: string
 }
 
 const props = defineProps<Props>()
@@ -26,7 +27,7 @@ function fieldWidth(count: number) {
     >
       <span />
       <strong>{{ t('summary.running') }}</strong>
-      <p>{{ t('summary.applying') }}</p>
+      <p>{{ progressText || t('summary.applying') }}</p>
     </div>
 
     <div
@@ -52,6 +53,10 @@ function fieldWidth(count: number) {
             <dt>{{ t('summary.alignment') }}</dt>
             <dd>{{ report.alignment }}%</dd>
           </div>
+          <div>
+            <dt>{{ t('summary.reviewLoad') }}</dt>
+            <dd>{{ report.reviewLoad === null ? '—' : `${report.reviewLoad}%` }}</dd>
+          </div>
         </dl>
       </section>
 
@@ -70,11 +75,19 @@ function fieldWidth(count: number) {
             <strong>{{ report.errors }}</strong>
             <span>{{ t('summary.error') }}</span>
           </div>
+          <div class="result-total result-total--uncertain">
+            <strong>{{ report.uncertain }}</strong>
+            <span>{{ t('catalog.ai.uncertain') }}</span>
+          </div>
         </div>
         <dl class="verification-alerts">
           <div :class="{ 'verification-alert--active': report.relationChanged > 0 }">
             <dt>{{ t('summary.relationChanged') }}</dt>
             <dd>{{ report.relationChanged }}</dd>
+          </div>
+          <div :class="{ 'verification-alert--review': report.reviewRequired > 0 }">
+            <dt>{{ t('summary.reviewRequired') }}</dt>
+            <dd>{{ report.reviewRequired }}</dd>
           </div>
           <div :class="{ 'verification-alert--danger': report.stale > 0 }">
             <dt>{{ t('summary.stale') }}</dt>
@@ -85,6 +98,7 @@ function fieldWidth(count: number) {
 
       <section class="summary-section distribution-section">
         <h3>{{ t('summary.distribution') }}</h3>
+        <p class="distribution-hint">{{ t('summary.distributionHint') }}</p>
         <div class="distribution-list">
           <div
             v-for="field in report.fields"
@@ -174,8 +188,8 @@ function fieldWidth(count: number) {
 
 .result-totals {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
   padding: 34px 10px 18px;
 }
 
@@ -203,9 +217,13 @@ function fieldWidth(count: number) {
   color: #b42c31;
 }
 
+.result-total--uncertain strong {
+  color: #af7b1d;
+}
+
 .verification-alerts {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -235,8 +253,20 @@ function fieldWidth(count: number) {
   background: #fde8e6;
 }
 
+.verification-alerts .verification-alert--review {
+  color: #8b641f;
+  background: #fff3dc;
+}
+
 .distribution-section h3 {
   margin-bottom: 22px;
+}
+
+.distribution-hint {
+  margin: -15px 0 18px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #998f86;
 }
 
 .distribution-list {
@@ -337,6 +367,10 @@ function fieldWidth(count: number) {
   .distribution-row > span,
   .distribution-row b {
     font-size: 15px;
+  }
+
+  .verification-alerts {
+    grid-template-columns: 1fr;
   }
 }
 </style>

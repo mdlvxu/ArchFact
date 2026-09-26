@@ -2,7 +2,7 @@
 import { Delete, Download, RefreshRight, VideoPause } from '@element-plus/icons-vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { buildProcessingMetrics } from '@/domain/processing-metrics'
-import { useI18n } from '@/i18n'
+import { localizeProcessingLog, useI18n } from '@/i18n'
 
 /** 处理日志记录 */
 export interface ProcessLog {
@@ -47,6 +47,11 @@ const metrics = computed(() => buildProcessingMetrics({
   locale: locale.value,
 }))
 
+const stoppedSummary = computed(() => t('processing.cancelledSummary', {
+  current: props.processedPages,
+  total: props.totalPages,
+}))
+
 onMounted(() => {
   clockTimer = globalThis.setInterval(() => {
     if (props.running) nowMs.value = Date.now()
@@ -71,6 +76,13 @@ onBeforeUnmount(() => {
       :stroke-width="11"
       color="#b76616"
     />
+    <p
+      v-if="stopped"
+      class="processing__stopped-summary"
+      role="status"
+    >
+      {{ stoppedSummary }}
+    </p>
 
     <div class="processing__body">
       <div
@@ -88,7 +100,7 @@ onBeforeUnmount(() => {
           >
             {{ log.status }}
           </span>
-          <span>{{ log.text }}</span>
+          <span>{{ localizeProcessingLog(log.text) }}</span>
         </p>
         <p
           v-if="logs.length === 0"
@@ -183,11 +195,22 @@ onBeforeUnmount(() => {
 }
 
 .processing__progress {
-  margin-bottom: 12px;
+  margin-bottom: 7px;
 
   :deep(.el-progress-bar__outer) {
     background-color: #ead9c8;
   }
+}
+
+.processing__stopped-summary {
+  margin: 0 0 8px;
+  font-size: var(--af-font-caption);
+  line-height: 1.35;
+  color: #9a5b19;
+}
+
+.processing__stopped-summary + .processing__body {
+  height: calc(100% - 75px);
 }
 
 .processing__body {
@@ -212,19 +235,26 @@ onBeforeUnmount(() => {
 
 .log-line {
   display: flex;
+  align-items: flex-start;
   gap: 5px;
   margin-bottom: 3px;
   font-size: var(--af-font-caption);
   line-height: 1.4;
   color: #69645e;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .log-status {
-  min-width: 34px;
+  flex: 0 0 56px;
+  min-width: 56px;
   padding: 0 3px;
   text-align: center;
   border-radius: 2px;
+}
+
+.log-line > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .log-status--info {

@@ -78,6 +78,7 @@ def build_extraction_pipeline(engine: ExtractionEngine, engine_name: str) -> Ext
                 key="semantic_extraction",
                 provider=getattr(engine, "provider_name", "llm"),
                 model=getattr(engine, "_model", "configured-model"),
+                version="3",
             ),
         )
     return ExtractionPipeline(

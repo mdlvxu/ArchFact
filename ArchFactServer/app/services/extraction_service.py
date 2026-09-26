@@ -12,6 +12,7 @@ import fitz
 
 from app.core.config import Settings
 from app.core.errors import ConflictError
+from app.domain.page_semantics import PageSemantics
 from app.infrastructure.gridfs_storage import GridFsStorage
 from app.infrastructure.task_dispatcher import LocalJobDispatcher
 from app.models.schemas import ExtractionConfig, ExtractionJobCreate
@@ -23,7 +24,6 @@ from app.services.extraction_engine import ExtractionEngine, PageChunk
 from app.services.extraction_pipeline import PageExtractionResult, build_extraction_pipeline
 from app.services.page_discovery import PageDiscoveryService
 from app.services.page_preprocessor import PagePreprocessor
-from app.services.page_semantics import PageSemantics
 from app.services.post_processor import PostProcessor
 from app.services.region_processor import RegionProcessor
 from app.services.relation_matcher import RelationMatcher
@@ -80,11 +80,15 @@ class ExtractionService:
     ) -> dict[str, Any]:
         await self._repository.get_document(request.document_id)
         pipeline_id = self._pipeline.resolve_id(request.pipeline_id)
+        system_prompt = await self._repository.get_extraction_system_prompt()
+        config = request.config.model_copy(
+            update={"system_prompt": (system_prompt or {}).get("content")}
+        )
         job = await self._repository.create_job(
             document_id=request.document_id,
             pages=request.pages,
             pipeline_id=pipeline_id,
-            config=request.config.model_dump(mode="json"),
+            config=config.model_dump(mode="json"),
             idempotency_key=idempotency_key,
         )
         if job.pop("_was_created", False):
@@ -151,6 +155,23 @@ class ExtractionService:
         await self._dispatcher.dispatch(job_id)
         return await self._repository.get_job(job_id)
 
+    async def resume_interrupted_jobs(self) -> int:
+        """Re-dispatch in-flight extraction jobs after process restart."""
+
+        cancelled = await self._repository.finalize_cancelling_extraction_jobs()
+        if cancelled:
+            print(f"Finalized {cancelled} cancelling extraction job(s) after restart")
+        jobs = await self._repository.list_resumable_extraction_jobs()
+        for job in jobs:
+            job_id = str(job["_id"])
+            await self._repository.append_event(
+                job_id,
+                "INFO",
+                "服务重启后恢复抽取，将跳过已完成页面并续跑剩余页面",
+            )
+            await self._dispatcher.dispatch(job_id)
+        return len(jobs)
+
     async def run_job(self, job_id: str) -> None:
         job = await self._repository.get_job(job_id)
         document = await self._repository.get_document(job["document_id"])
@@ -178,34 +199,47 @@ class ExtractionService:
             if isinstance(page, int) or str(page).isdigit()
         }
         retry_mode = bool(retry_pages)
+        page_runs = await self._repository.list_job_page_runs(job_id)
+        resumed_completed_pages = {
+            int(run["page_no"])
+            for run in page_runs
+            if not retry_mode
+            and run.get("status") == "completed"
+            and int(run.get("page_no", 0)) > 0
+        }
+        resume_mode = bool(resumed_completed_pages)
+        preserve_reviews = retry_mode or resume_mode
         execution_pages = sorted(retry_pages) if retry_mode else job.get("pages")
-        base_succeeded_pages = int(job.get("succeeded_pages", 0)) if retry_mode else 0
+        base_succeeded_pages = (
+            int(job.get("succeeded_pages", 0))
+            if retry_mode
+            else len(resumed_completed_pages)
+        )
         if retry_mode:
-            stored_regions = await self._repository.list_job_regions(job_id)
-            regions = [
-                self._restore_stored_output(region)
-                for region in stored_regions
-                if int(region.get("page", 0)) not in retry_pages
+            regions, relations, records, page_issues = await self._restore_partial_outputs(
+                job_id,
+                drop_pages=retry_pages,
+                page_issues=job.get("page_issues", []),
+            )
+        elif resume_mode:
+            regions, relations, records, page_issues = await self._restore_partial_outputs(
+                job_id,
+                keep_pages=resumed_completed_pages,
+                page_issues=job.get("page_issues", []),
+            )
+            page_metrics = [
+                copy.deepcopy(metric)
+                for metric in job.get("page_metrics") or []
+                if int(metric.get("page", 0)) in resumed_completed_pages
             ]
-            retained_region_ids = {str(region["id"]) for region in regions}
-            stored_relations = await self._repository.list_job_relations(job_id)
-            relations = [
-                self._restore_stored_output(relation)
-                for relation in stored_relations
-                if str(relation.get("source_region_id", "")) in retained_region_ids
-                and str(relation.get("target_region_id", "")) in retained_region_ids
-            ]
-            stored_records = await self._repository.list_job_records(job_id)
-            records = [
-                self._restore_stored_output(record)
-                for record in stored_records
-                if not self._record_touches_pages(record, retry_pages)
-            ]
-            page_issues = [
-                copy.deepcopy(issue)
-                for issue in job.get("page_issues", [])
-                if int(issue.get("page", 0)) not in retry_pages
-            ]
+            await self._repository.append_event(
+                job_id,
+                "INFO",
+                "检测到未完成抽取，已恢复 "
+                + "、".join(str(page) for page in sorted(resumed_completed_pages)[:12])
+                + ("…" if len(resumed_completed_pages) > 12 else "")
+                + f" 共 {len(resumed_completed_pages)} 页的中间结果",
+            )
         semantic_cache_enabled = bool(
             self._settings.semantic_cache_enabled
             and self._settings.extraction_engine == "llm"
@@ -315,6 +349,8 @@ class ExtractionService:
 
         async def schedule_semantic_page(page: dict[str, Any]) -> None:
             page_no = int(page["page_no"])
+            if page_no in resumed_completed_pages:
+                return
             if PageSemantics.is_reference_index_text(str(page.get("text") or "")):
                 page["reference_index"] = True
             if (
@@ -414,8 +450,8 @@ class ExtractionService:
                 if page.get("status") != "failed":
                     await self._repository.append_event(
                         job_id,
-                        "SUCCESS",
-                        f"第 {page['page_no']} 页预处理完成",
+                        "INFO",
+                        f"第 {page['page_no']} 页预处理完成，等待语义抽取",
                     )
 
             requested_pages = set(execution_pages or [])
@@ -444,7 +480,10 @@ class ExtractionService:
                         config={
                             "thumbnail_scale": self._settings.discovery_thumbnail_scale,
                             "ocr_render_scale": self._settings.discovery_ocr_render_scale,
-                            "ocr_max_pages": self._settings.discovery_ocr_max_pages,
+                            "ocr_max_pages": self._page_discovery.scaled_discovery_ocr_max_pages(
+                                self._settings.discovery_ocr_max_pages,
+                                pdf_page_count,
+                            ),
                             "color_ratio_threshold": (
                                 self._settings.discovery_color_ratio_threshold
                             ),
@@ -725,11 +764,16 @@ class ExtractionService:
                         "扫描页 OCR 未识别到有效文字",
                     )
 
+            attach_pages = [
+                page
+                for page in prepared.pages
+                if int(page["page_no"]) not in resumed_completed_pages
+            ]
             regions.extend(
                 self._attach_text_regions(
                     job_id=job_id,
                     document_id=document["_id"],
-                    pages=prepared.pages,
+                    pages=attach_pages,
                     model_run_id=parse_run_id,
                 )
             )
@@ -913,10 +957,22 @@ class ExtractionService:
                         job_id,
                         records,
                         model_run_ids=model_run_ids,
-                        preserve_reviews=retry_mode,
+                        preserve_reviews=preserve_reviews,
                     )
                     return
                 page_no = page["page_no"]
+                if resume_mode and int(page_no) in resumed_completed_pages:
+                    await self._repository.update_job(
+                        job_id,
+                        progress={
+                            "current": round(
+                                total * 0.35 + index / max(total, 1) * total * 0.65
+                            ),
+                            "total": total,
+                            "percent": 35 + round(index / max(total, 1) * 55),
+                        },
+                    )
+                    continue
                 if page.get("status") == "failed":
                     failed_pages += 1
                     await self._repository.update_job(
@@ -1124,6 +1180,14 @@ class ExtractionService:
                         else None
                     ),
                 )
+                await self._checkpoint_job_outputs(
+                    job_id,
+                    records=records,
+                    regions=regions,
+                    relations=relations,
+                    model_run_ids=model_run_ids,
+                    preserve_reviews=preserve_reviews,
+                )
                 percent = 35 + round(index / max(total, 1) * 55)
                 await self._repository.update_job(
                     job_id,
@@ -1303,7 +1367,7 @@ class ExtractionService:
                 job_id,
                 records,
                 model_run_ids=model_run_ids,
-                preserve_reviews=retry_mode,
+                preserve_reviews=preserve_reviews,
             )
             await self._repository.replace_job_entities(
                 job_id=job_id,
@@ -1393,7 +1457,7 @@ class ExtractionService:
         schema_hash = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         payload = {
-            "cache_version": "semantic-compact-v2",
+            "cache_version": "semantic-compact-v4",
             "document_sha256": document_sha256,
             "page_no": int(page_no),
             "text_hash": text_hash,
@@ -1401,6 +1465,7 @@ class ExtractionService:
             "pipeline_id": self._pipeline.id,
             "provider": self._pipeline.extraction_stage.provider,
             "model": self._pipeline.extraction_stage.model,
+            "stage_version": self._pipeline.extraction_stage.version,
         }
         cache_key = hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -1490,6 +1555,78 @@ class ExtractionService:
                 result.append(text)
         return result
 
+    async def _restore_partial_outputs(
+        self,
+        job_id: str,
+        *,
+        keep_pages: set[int] | None = None,
+        drop_pages: set[int] | None = None,
+        page_issues: list[dict[str, Any]] | None = None,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
+        stored_regions = await self._repository.list_job_regions(job_id)
+        regions: list[dict[str, Any]] = []
+        for region in stored_regions:
+            restored = self._restore_stored_output(region)
+            page_no = int(restored.get("page", 0))
+            if keep_pages is not None and page_no not in keep_pages:
+                continue
+            if drop_pages is not None and page_no in drop_pages:
+                continue
+            regions.append(restored)
+        retained_region_ids = {str(region["id"]) for region in regions}
+        stored_relations = await self._repository.list_job_relations(job_id)
+        relations: list[dict[str, Any]] = []
+        for relation in stored_relations:
+            restored = self._restore_stored_output(relation)
+            if str(restored.get("source_region_id", "")) not in retained_region_ids:
+                continue
+            if str(restored.get("target_region_id", "")) not in retained_region_ids:
+                continue
+            relations.append(restored)
+        stored_records = await self._repository.list_job_records(job_id)
+        records: list[dict[str, Any]] = []
+        for record in stored_records:
+            restored = self._restore_stored_output(record)
+            record_pages = self._record_page_set(restored)
+            if keep_pages is not None and (not record_pages or not record_pages <= keep_pages):
+                continue
+            if drop_pages is not None and bool(record_pages & drop_pages):
+                continue
+            records.append(restored)
+        retained_issues: list[dict[str, Any]] = []
+        for issue in page_issues or []:
+            page_no = int(issue.get("page", 0))
+            if keep_pages is not None and page_no not in keep_pages:
+                continue
+            if drop_pages is not None and page_no in drop_pages:
+                continue
+            retained_issues.append(copy.deepcopy(issue))
+        return regions, relations, records, retained_issues
+
+    async def _checkpoint_job_outputs(
+        self,
+        job_id: str,
+        *,
+        records: list[dict[str, Any]],
+        regions: list[dict[str, Any]],
+        relations: list[dict[str, Any]],
+        model_run_ids: list[str],
+        preserve_reviews: bool,
+    ) -> None:
+        await self._repository.replace_job_regions(job_id, regions)
+        await self._repository.replace_job_relations(job_id, relations)
+        await self._repository.replace_job_records(
+            job_id,
+            records,
+            model_run_ids=model_run_ids,
+            preserve_reviews=preserve_reviews,
+        )
+
     @staticmethod
     def _restore_stored_output(document: dict[str, Any]) -> dict[str, Any]:
         restored = copy.deepcopy(document)
@@ -1499,7 +1636,7 @@ class ExtractionService:
         return restored
 
     @staticmethod
-    def _record_touches_pages(record: dict[str, Any], pages: set[int]) -> bool:
+    def _record_page_set(record: dict[str, Any]) -> set[int]:
         record_pages: set[int] = set()
         for key in ("source_pages", "associated_pages", "document_context_pages"):
             for page in record.get(key, []) or []:
@@ -1514,7 +1651,11 @@ class ExtractionService:
                 page = evidence.get("page")
                 if isinstance(page, int) or str(page).isdigit():
                     record_pages.add(int(page))
-        return bool(record_pages & pages)
+        return record_pages
+
+    @staticmethod
+    def _record_touches_pages(record: dict[str, Any], pages: set[int]) -> bool:
+        return bool(ExtractionService._record_page_set(record) & pages)
 
     async def _fuse_with_heartbeat(
         self,

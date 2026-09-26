@@ -12,7 +12,37 @@ const apiMocks = vi.hoisted(() => ({
   applyRematch: vi.fn(),
   cancelRematch: vi.fn(),
   createRematch: vi.fn(),
-  createVerificationSession: vi.fn(),
+  createVerificationExperiment: vi.fn(),
+  startMachineVerificationRun: vi.fn(),
+  pauseMachineVerificationRun: vi.fn(),
+  resumeMachineVerificationRun: vi.fn(),
+  terminateMachineVerificationRun: vi.fn(),
+  getMachineVerificationRun: vi.fn(),
+  getActiveMachineVerificationRun: vi.fn().mockResolvedValue(null),
+  getActiveVerificationSession: vi.fn().mockResolvedValue(null),
+  getActiveVerificationExperiment: vi.fn().mockResolvedValue({
+    id: 'legacy',
+    job_id: 'job-1',
+    name: '历史校验',
+    sequence: 0,
+    status: 'legacy',
+    matching_version_id: 'M0',
+    artifact_count: 120,
+    created_at: '2026-07-18T00:00:00Z',
+  }),
+  getVerificationExperiments: vi.fn().mockResolvedValue([
+    {
+      id: 'legacy',
+      job_id: 'job-1',
+      name: '历史校验',
+      sequence: 0,
+      status: 'legacy',
+      matching_version_id: 'M0',
+      artifact_count: 120,
+      created_at: '2026-07-18T00:00:00Z',
+    },
+  ]),
+  getVerificationSession: vi.fn(),
   getRematch: vi.fn(),
   getRematchChanges: vi.fn(),
   createQualityEvaluation: vi.fn(),
@@ -67,6 +97,43 @@ afterEach(() => {
 })
 
 describe('Machine Verification 页面组件', () => {
+  it('每次进入时仅默认启用器物编号唯一性断言', async () => {
+    apiMocks.getVerificationVersions.mockResolvedValue([])
+    const wrapper = mount(MachineVerificationWorkspace, { props: { jobId: 'job-1' } })
+
+    await vi.waitFor(() => expect(apiMocks.getVerificationVersions).toHaveBeenCalled())
+
+    expect(wrapper.findAll('.rule-toggle--enabled')).toHaveLength(1)
+    expect(wrapper.find('.rule-card').text()).toContain('ID Uniqueness')
+  })
+
+  it('执行中显示暂停操作，暂停后可继续', async () => {
+    const runningWrapper = mount(AssertionRules, {
+      props: { rules, running: true },
+    })
+    await runningWrapper.find('.pause-button').trigger('click')
+    expect(runningWrapper.emitted('pause')).toHaveLength(1)
+
+    const pausedWrapper = mount(AssertionRules, {
+      props: { rules, running: false, paused: true },
+    })
+    await pausedWrapper.find('.execute-button').trigger('click')
+    expect(pausedWrapper.emitted('resume')).toHaveLength(1)
+  })
+
+  it('执行中或暂停时可终止当前校验，以便修改规则后重新执行', async () => {
+    const runningWrapper = mount(AssertionRules, {
+      props: { rules, running: true },
+    })
+    await runningWrapper.find('.terminate-button').trigger('click')
+    expect(runningWrapper.emitted('terminate')).toHaveLength(1)
+
+    const pausedWrapper = mount(AssertionRules, {
+      props: { rules, running: false, paused: true },
+    })
+    expect(pausedWrapper.find('.terminate-button').exists()).toBe(true)
+  })
+
   it('通过 Add Rule 弹框保存，并将新规则插入列表最上方', async () => {
     const wrapper = mount(AssertionRules, {
       props: { rules, running: false },
@@ -139,9 +206,93 @@ describe('Machine Verification 页面组件', () => {
     expect(wrapper.emitted('selectVersion')?.[0]).toEqual([2])
   })
 
-  it('执行校验时创建后端会话并交给第二页处理固定样本', async () => {
+  it('新建实验基线保留提取数据，并把当前实验切换为新的 V1 起点', async () => {
     apiMocks.getVerificationVersions.mockResolvedValue([])
-    apiMocks.createVerificationSession.mockResolvedValue({
+    const experiment = {
+      id: 'experiment-1',
+      job_id: 'job-1',
+      name: '实验 E1',
+      sequence: 1,
+      status: 'active',
+      matching_version_id: 'M0',
+      artifact_count: 120,
+      created_at: '2026-07-18T00:00:00Z',
+    }
+    apiMocks.createVerificationExperiment.mockResolvedValue(experiment)
+    apiMocks.getActiveVerificationExperiment
+      .mockResolvedValueOnce({
+        id: 'legacy', job_id: 'job-1', name: '历史校验', sequence: 0,
+        status: 'legacy', matching_version_id: 'M0', artifact_count: 120,
+        created_at: '2026-07-18T00:00:00Z',
+      })
+      .mockResolvedValueOnce(experiment)
+    const wrapper = mount(MachineVerificationWorkspace, { props: { jobId: 'job-1' } })
+    await vi.waitFor(() => expect(apiMocks.getVerificationVersions).toHaveBeenCalled())
+    await wrapper.find('.new-experiment-button').trigger('click')
+    expect(wrapper.find('.new-experiment-confirm').text()).toContain('开始新的断言实验？')
+    await wrapper.find('.new-experiment-confirm__actions button:last-child').trigger('click')
+    await vi.waitFor(() => {
+      expect(apiMocks.createVerificationExperiment).toHaveBeenCalledWith('job-1')
+    })
+    expect(wrapper.text()).toContain('实验 E1')
+  })
+
+  it('当前实验尚未完成 V1 时，禁止创建下一实验基线', async () => {
+    const experiment = {
+      id: 'experiment-1',
+      job_id: 'job-1',
+      name: '实验 E1',
+      sequence: 1,
+      status: 'active' as const,
+      matching_version_id: 'M0',
+      artifact_count: 120,
+      created_at: '2026-07-18T00:00:00Z',
+    }
+    apiMocks.getActiveVerificationExperiment.mockResolvedValue(experiment)
+    apiMocks.getVerificationExperiments.mockResolvedValue([experiment])
+    apiMocks.getVerificationVersions.mockResolvedValue([])
+    const wrapper = mount(MachineVerificationWorkspace, { props: { jobId: 'job-1' } })
+
+    await vi.waitFor(() => expect(apiMocks.getVerificationVersions).toHaveBeenCalled())
+
+    expect(wrapper.find('.new-experiment-button').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.new-experiment-blocked-reason').text()).toContain('完成当前实验的 V1')
+  })
+
+  it('切换历史实验时只加载其断言版本，并锁定编辑与执行', async () => {
+    apiMocks.getVerificationVersions.mockResolvedValue([])
+    apiMocks.getActiveVerificationExperiment.mockResolvedValue({
+      id: 'experiment-active', job_id: 'job-1', name: '实验 E2', sequence: 2,
+      status: 'active', matching_version_id: 'M0', artifact_count: 120,
+      created_at: '2026-07-18T00:00:00Z',
+    })
+    apiMocks.getVerificationExperiments.mockResolvedValue([
+      {
+        id: 'experiment-active', job_id: 'job-1', name: '实验 E2', sequence: 2,
+        status: 'active', matching_version_id: 'M0', artifact_count: 120,
+        created_at: '2026-07-18T00:00:00Z',
+      },
+      {
+        id: 'experiment-history', job_id: 'job-1', name: '实验 E1', sequence: 1,
+        status: 'archived', matching_version_id: 'M0', artifact_count: 120,
+        created_at: '2026-07-17T00:00:00Z',
+      },
+    ])
+    const wrapper = mount(MachineVerificationWorkspace, { props: { jobId: 'job-1' } })
+    await vi.waitFor(() => expect(apiMocks.getVerificationVersions).toHaveBeenCalled())
+    await wrapper.find('.experiment-switcher select').setValue('experiment-history')
+    await vi.waitFor(() => {
+      expect(apiMocks.getVerificationVersions).toHaveBeenLastCalledWith('job-1', {
+        experimentId: 'experiment-history',
+      })
+    })
+    expect(wrapper.text()).toContain('查看历史断言实验')
+    expect(wrapper.find('.execute-button').attributes('disabled')).toBeDefined()
+  })
+
+  it('首次全量校验完成后创建固定 18 条样本并跳到预览页', async () => {
+    apiMocks.getVerificationVersions.mockResolvedValue([])
+    const session = {
       id: 'verify-1',
       job_id: 'job-1',
       cohort_id: 'cohort-1',
@@ -152,22 +303,132 @@ describe('Machine Verification 页面组件', () => {
       reviewed_count: 0,
       sample_count: 18,
       version_id: null,
+      ai_run_id: null,
       created_at: '2026-07-18T00:00:00Z',
       updated_at: '2026-07-18T00:00:00Z',
       completed_at: null,
-    })
+    }
+    const run = {
+      id: 'machine_verify-1',
+      job_id: 'job-1',
+      mode: 'initial',
+      status: 'completed',
+      progress: { current: 120, total: 120, percent: 100 },
+      rules,
+      sample_size: 18,
+      total_artifacts: 120,
+      pass_count: 90,
+      fail_count: 20,
+      uncertain_count: 10,
+      session_id: session.id,
+      version_id: null,
+      error: null,
+      created_at: '2026-07-18T00:00:00Z',
+      updated_at: '2026-07-18T00:00:00Z',
+      completed_at: '2026-07-18T00:02:00Z',
+    }
+    apiMocks.startMachineVerificationRun.mockResolvedValue(run)
+    apiMocks.getMachineVerificationRun.mockResolvedValue(run)
+    apiMocks.getVerificationSession.mockResolvedValue(session)
     const wrapper = mount(MachineVerificationWorkspace, {
       props: { jobId: 'job-1' },
     })
     await nextTick()
     await wrapper.find('.execute-button').trigger('click')
-    await vi.waitFor(() => expect(apiMocks.createVerificationSession).toHaveBeenCalled())
+    await vi.waitFor(() => expect(apiMocks.startMachineVerificationRun).toHaveBeenCalled())
 
     expect(wrapper.emitted('startVerification')?.[0]?.[0]).toMatchObject({
       id: 'verify-1',
       target_version: 1,
       sample_count: 18,
     })
+  })
+
+  it('刷新或轮询中断后，会从当前实验的进行中会话恢复到人工核验', async () => {
+    apiMocks.getVerificationVersions.mockResolvedValue([])
+    apiMocks.getActiveVerificationSession.mockResolvedValueOnce({
+      id: 'verify-recover-1',
+      job_id: 'job-1',
+      cohort_id: 'cohort-1',
+      target_version: 1,
+      status: 'in_progress',
+      rules,
+      items: [],
+      reviewed_count: 0,
+      sample_count: 18,
+      version_id: null,
+      ai_run_id: null,
+      created_at: '2026-07-18T00:00:00Z',
+      updated_at: '2026-07-18T00:00:00Z',
+      completed_at: null,
+    })
+
+    const wrapper = mount(MachineVerificationWorkspace, { props: { jobId: 'job-1' } })
+
+    await vi.waitFor(() => {
+      expect(wrapper.emitted('startVerification')?.[0]?.[0]).toMatchObject({
+        id: 'verify-recover-1',
+        sample_count: 18,
+      })
+    })
+  })
+
+  it('后续断言复核完成后刷新版本，不再重复进入人工审核', async () => {
+    apiMocks.getVerificationVersions
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'version-2',
+          job_id: 'job-1',
+          cohort_id: 'cohort-1',
+          version: 2,
+          parent_version_id: 'version-1',
+          rules,
+          items: [],
+          report: {
+            sample_count: 18,
+            reviewed_count: 18,
+            pass_count: 12,
+            fail_count: 6,
+            pass_rate: 0.66,
+            total_artifacts: 120,
+            full_pass_count: 90,
+            full_fail_count: 20,
+            full_uncertain_count: 10,
+            human_machine_alignment: 0.77,
+          },
+          created_at: '2026-07-18T00:00:00Z',
+        },
+      ])
+    const run = {
+      id: 'machine_verify-2',
+      job_id: 'job-1',
+      mode: 'recheck',
+      status: 'completed',
+      progress: { current: 120, total: 120, percent: 100 },
+      rules,
+      sample_size: 18,
+      total_artifacts: 120,
+      pass_count: 90,
+      fail_count: 20,
+      uncertain_count: 10,
+      session_id: null,
+      version_id: 'version-2',
+      error: null,
+      created_at: '2026-07-18T00:00:00Z',
+      updated_at: '2026-07-18T00:00:00Z',
+      completed_at: '2026-07-18T00:02:00Z',
+    }
+    apiMocks.startMachineVerificationRun.mockResolvedValue(run)
+    apiMocks.getMachineVerificationRun.mockResolvedValue(run)
+    const wrapper = mount(MachineVerificationWorkspace, {
+      props: { jobId: 'job-1' },
+    })
+    await nextTick()
+    await wrapper.find('.execute-button').trigger('click')
+    await vi.waitFor(() => expect(apiMocks.startMachineVerificationRun).toHaveBeenCalled())
+    expect(wrapper.emitted('startVerification')).toBeUndefined()
+    expect(apiMocks.getVerificationVersions).toHaveBeenCalledTimes(2)
   })
 
   it.skip('keeps rematch as a preview until the user explicitly applies it', async () => {

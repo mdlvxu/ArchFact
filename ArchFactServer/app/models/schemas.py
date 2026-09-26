@@ -1,9 +1,25 @@
 from datetime import datetime
 from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 T = TypeVar("T")
+
+
+# These identifiers participate in the document-to-visual relation chain.  They
+# are textual references even when they contain digits, for example “图3-4C”.
+_TEXTUAL_REFERENCE_FIELD_KEYS = frozenset(
+    {
+        "artifact_id",
+        "context_id",
+        "figure_caption",
+        "figure_no",
+        "figure_item_no",
+        "plate_no",
+        "plate_item_no",
+        "color_plate",
+    }
+)
 
 
 class ApiResponse(BaseModel, Generic[T]):
@@ -17,7 +33,8 @@ class ExtractionFieldSpec(BaseModel):
     label: str = Field(min_length=1, max_length=100)
     type: Literal["string", "number", "date", "boolean", "image", "object", "array"]
     required: bool = False
-    instruction: str | None = Field(default=None, max_length=500)
+    instruction: str | None = Field(default=None, max_length=1200)
+    default_instruction: str | None = Field(default=None, max_length=1200)
     evidence_kind: (
         Literal[
             "text",
@@ -32,6 +49,14 @@ class ExtractionFieldSpec(BaseModel):
         ]
         | None
     ) = None
+
+    @model_validator(mode="after")
+    def normalize_textual_reference_type(self) -> "ExtractionFieldSpec":
+        """Keep system relation keys textual even if a legacy template says number."""
+
+        if self.key in _TEXTUAL_REFERENCE_FIELD_KEYS:
+            self.type = "string"
+        return self
 
 
 class PostProcessingRuleSpec(BaseModel):
@@ -58,6 +83,42 @@ class ExtractionTemplateDefinition(BaseModel):
             raise ValueError("模板字段 key 不能重复")
         return fields
 
+    @model_validator(mode="after")
+    def ensure_instruction_budget(self) -> "ExtractionTemplateDefinition":
+        total = sum(len(field.instruction or "") for field in self.fields)
+        if total > 4000:
+            raise ValueError("模板字段提示词总长度不能超过 4000 个字符")
+        return self
+
+
+class ExtractionPromptPreviewRequest(BaseModel):
+    template: ExtractionTemplateDefinition
+
+
+class ExtractionSystemPromptUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=8000)
+
+    @field_validator("content")
+    @classmethod
+    def normalize_content(cls, content: str) -> str:
+        normalized = content.strip()
+        if not normalized:
+            raise ValueError("公共提示词不能为空")
+        return normalized
+
+
+class ExtractionSystemPromptView(ExtractionSystemPromptUpdate):
+    default_content: str = Field(min_length=1, max_length=8000)
+
+
+class ExtractionPromptPreviewView(BaseModel):
+    template_id: str
+    template_name: str
+    composed_prompt: str
+    complete_prompt: str
+    estimated_tokens: int
+    dynamic_content_note: str
+
 
 class PostProcessingRuleDefinition(PostProcessingRuleSpec):
     id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_-]*$")
@@ -71,6 +132,7 @@ class ExtractionConfig(BaseModel):
     template_name: str = Field(min_length=1, max_length=100)
     fields: list[ExtractionFieldSpec] = Field(min_length=1, max_length=50)
     post_processing_rules: list[PostProcessingRuleSpec] = Field(default_factory=list, max_length=20)
+    system_prompt: str | None = Field(default=None, max_length=8000)
 
     @field_validator("fields")
     @classmethod
@@ -81,6 +143,13 @@ class ExtractionConfig(BaseModel):
         if len(keys) != len(set(keys)):
             raise ValueError("字段 key 不能重复")
         return fields
+
+    @model_validator(mode="after")
+    def ensure_instruction_budget(self) -> "ExtractionConfig":
+        total = sum(len(field.instruction or "") for field in self.fields)
+        if total > 4000:
+            raise ValueError("字段提示词总长度不能超过 4000 个字符")
+        return self
 
 
 class DocumentCreated(BaseModel):
@@ -554,6 +623,7 @@ class VerificationRuleSnapshot(BaseModel):
 class VerificationSessionCreate(BaseModel):
     rules: list[VerificationRuleSnapshot] = Field(min_length=1, max_length=100)
     sample_size: int = Field(default=18, ge=1, le=100)
+    assertion_baseline_id: Literal["v1", "v2"] = "v1"
 
     @field_validator("rules")
     @classmethod
@@ -564,6 +634,19 @@ class VerificationSessionCreate(BaseModel):
         if not any(rule.enabled for rule in rules):
             raise ValueError("至少启用一条校验规则")
         return rules
+
+
+class VerificationExperimentView(BaseModel):
+    """One isolated, blind verification experiment over existing extraction data."""
+
+    id: str
+    job_id: str
+    name: str
+    sequence: int
+    status: Literal["active", "archived", "legacy"]
+    matching_version_id: str = "M0"
+    artifact_count: int = 0
+    created_at: datetime
 
 
 class VerificationItemUpdate(BaseModel):
@@ -591,12 +674,19 @@ class VerificationItemView(BaseModel):
     relation_signature: str = ""
     relation_changed: bool = False
     sampling_strata: list[str] = Field(default_factory=list)
+    expected_label: Literal["correct", "incorrect"] | None = None
     stale: bool = False
     reviewed_at: datetime | None = None
     ai_verdict: Literal["passed", "failed", "uncertain"] | None = None
     ai_confidence: float | None = Field(default=None, ge=0, le=1)
     ai_reason: str = ""
     ai_field_results: list[dict[str, Any]] = Field(default_factory=list)
+    machine_verdict: Literal["passed", "failed", "uncertain"] | None = None
+    machine_confidence: float | None = Field(default=None, ge=0, le=1)
+    machine_reason: str = ""
+    calibrated_machine_verdict: Literal["passed", "failed", "uncertain"] | None = None
+    calibrated_machine_confidence: float | None = Field(default=None, ge=0, le=1)
+    calibrated_machine_reason: str = ""
     gold_record_id: str | None = None
     gold_match_status: Literal["matched", "not_found", "ambiguous", "unavailable"] | None = None
     consensus_status: Literal[
@@ -605,6 +695,7 @@ class VerificationItemView(BaseModel):
         "conflict",
         "human_resolved",
         "benchmark_unavailable",
+        "machine_verified",
     ] = "pending"
     conflict_resolved: bool = False
 
@@ -635,11 +726,32 @@ class VerificationReportView(BaseModel):
     ai_uncertain_count: int = 0
     conflict_count: int = 0
     benchmark_matched_count: int = 0
+    full_pass_count: int = 0
+    full_fail_count: int = 0
+    full_uncertain_count: int = 0
+    model_unavailable_count: int = 0
+    model_unavailable_reason: str | None = None
+    error_coverage: float | None = Field(default=None, ge=0, le=1)
+    error_precision: float | None = Field(default=None, ge=0, le=1)
+    human_machine_alignment: float | None = Field(default=None, ge=0, le=1)
+    review_load: float | None = Field(default=None, ge=0, le=1)
+    false_positive_rate: float | None = Field(default=None, ge=0, le=1)
+    false_negative_rate: float | None = Field(default=None, ge=0, le=1)
+    true_positive_count: int = 0
+    true_negative_count: int = 0
+    false_positive_count: int = 0
+    false_negative_count: int = 0
+    # Passed cards with a non-blocking doubtful field remain visible without
+    # being folded into the final failure distribution.
+    review_required_count: int = 0
+    field_error_distribution: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class VerificationSessionView(BaseModel):
     id: str
     job_id: str
+    experiment_id: str = "legacy"
+    experiment_name: str = "历史校验"
     cohort_id: str
     target_version: int
     status: Literal["in_progress", "ai_review", "conflict_review", "completed"]
@@ -651,6 +763,9 @@ class VerificationSessionView(BaseModel):
     ai_run_id: str | None = None
     gold_dataset_id: str | None = None
     matching_version_id: str = "M0"
+    machine_run_id: str | None = None
+    assertion_baseline_id: Literal["v1", "v2"] = "v1"
+    assertion_baseline_name: str = "LLM 断言 V1"
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
@@ -659,6 +774,8 @@ class VerificationSessionView(BaseModel):
 class VerificationVersionView(BaseModel):
     id: str
     job_id: str
+    experiment_id: str = "legacy"
+    experiment_name: str = "历史校验"
     cohort_id: str
     version: int
     parent_version_id: str | None = None
@@ -669,6 +786,9 @@ class VerificationVersionView(BaseModel):
     ai_run_id: str | None = None
     gold_dataset_id: str | None = None
     gold_dataset_version: str | None = None
+    calibration_profile: dict[str, Any] | None = None
+    assertion_baseline_id: Literal["v1", "v2"] = "v1"
+    assertion_baseline_name: str = "LLM 断言 V1"
     created_at: datetime
 
 
@@ -688,6 +808,32 @@ class AiVerificationRunView(BaseModel):
     benchmark_available: bool = False
     conflict_count: int = 0
     uncertain_count: int = 0
+    version_id: str | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+
+
+class MachineVerificationRunView(BaseModel):
+    id: str
+    job_id: str
+    experiment_id: str = "legacy"
+    experiment_name: str = "历史校验"
+    mode: Literal["initial", "calibrated", "recheck"]
+    status: Literal["queued", "running", "paused", "completed", "failed", "terminated"]
+    progress: AiVerificationProgress = Field(default_factory=AiVerificationProgress)
+    rules: list[VerificationRuleSnapshot] = Field(default_factory=list)
+    assertion_baseline_id: Literal["v1", "v2"] = "v1"
+    assertion_baseline_name: str = "LLM 断言 V1"
+    sample_size: int = 18
+    total_artifacts: int = 0
+    pass_count: int = 0
+    fail_count: int = 0
+    uncertain_count: int = 0
+    model_unavailable_count: int = 0
+    model_unavailable_reason: str | None = None
+    session_id: str | None = None
     version_id: str | None = None
     error: str | None = None
     created_at: datetime

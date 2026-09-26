@@ -41,12 +41,21 @@ http.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  // Let the browser set multipart boundaries. A preset JSON/multipart type
+  // makes large PDF uploads fail immediately or hang without progress events.
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    config.headers.delete('Content-Type')
+  }
   return config
 })
 
 // 响应拦截器：统一处理 HTTP 状态码和业务错误码
 http.interceptors.response.use(
   (response: AxiosResponse<ApiResponse>) => {
+    // Binary downloads are intentionally not wrapped in the API JSON envelope.
+    if (response.config.responseType === 'blob') {
+      return response.data as unknown as AxiosResponse
+    }
     const { code, message, data } = response.data
 
     // 业务成功：直接返回 data 部分
@@ -63,15 +72,16 @@ http.interceptors.response.use(
       const requestOptions = error.config as RequestOptions | undefined
 
       if (!requestOptions?.suppressErrorMessage) {
-        // 公共 HTTP 错误统一提示
+        const payload = error.response?.data as ApiResponse | undefined
+        const backendMessage = typeof payload?.message === 'string' ? payload.message : ''
         if (status === 401) {
           ElMessage.error(translate('api.unauthorized'))
         } else if (status === 403) {
           ElMessage.error(translate('api.forbidden'))
         } else if (status === 500) {
-          ElMessage.error(translate('api.serverError'))
+          ElMessage.error(backendMessage || translate('api.serverError'))
         } else {
-          ElMessage.error(error.message || translate('api.networkError'))
+          ElMessage.error(backendMessage || error.message || translate('api.networkError'))
         }
       }
     }
@@ -86,7 +96,7 @@ export function get<T>(url: string, config?: RequestOptions): Promise<T> {
 }
 
 /** 封装 POST 请求，返回解析后的 data */
-export function post<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+export function post<T>(url: string, data?: unknown, config?: RequestOptions): Promise<T> {
   return http.post<ApiResponse<T>, T>(url, data, config)
 }
 

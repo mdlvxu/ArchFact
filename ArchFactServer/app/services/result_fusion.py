@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
+from app.domain.page_semantics import PageSemantics
 from app.models.schemas import ExtractionConfig
-from app.services.page_semantics import PageSemantics
 from app.services.relation_matcher import RelationMatcher
 from app.services.visual_reference import sequence_text_score
 
@@ -200,6 +200,10 @@ class ResultFusionService:
         for record_index, record in enumerate(records):
             record.setdefault("region_ids", [])
             record.setdefault("relation_ids", [])
+            if self._is_incomplete_artifact_context(record):
+                # A tomb/context heading such as M14 is textual provenance, not
+                # an artifact identity. It must never enter the visual graph.
+                continue
             for field_key, field in record.get("fields", {}).items():
                 expected_kind = expected_kinds.get(field_key)
                 if expected_kind is None:
@@ -333,6 +337,37 @@ class ResultFusionService:
         for index, record in enumerate(records):
             record["region_ids"] = sorted(set(record.get("region_ids", [])))
             record["relation_ids"] = sorted(set(record.get("relation_ids", [])))
+            if self._is_incomplete_artifact_context(record):
+                removed_region_ids = {
+                    region_id
+                    for region_id in record["region_ids"]
+                    if region_by_id.get(region_id, {}).get("kind")
+                    in {"number", "artifact", "line_drawing", "grave_drawing", "color_plate"}
+                }
+                record["region_ids"] = [
+                    region_id
+                    for region_id in record["region_ids"]
+                    if region_id not in removed_region_ids
+                ]
+                record["relation_ids"] = [
+                    relation_id
+                    for relation_id in record["relation_ids"]
+                    if not (
+                        (relation := relation_by_id.get(relation_id))
+                        and (
+                            str(relation.get("source_region_id", "")) in removed_region_ids
+                            or str(relation.get("target_region_id", "")) in removed_region_ids
+                        )
+                    )
+                ]
+                record["primary_number_region_id"] = None
+                record["primary_artifact_region_id"] = None
+                record["primary_relation_id"] = None
+                record["primary_link_score"] = None
+                record["thumbnail_region_id"] = None
+                record["associated_pages"] = sorted(set(record.get("source_pages", [])))
+                record["fusion_status"] = "unlinked"
+                continue
             primary_link = self._select_primary_visual_link(
                 record=record,
                 regions=regions,
@@ -1091,6 +1126,8 @@ class ResultFusionService:
 
         matched_records: set[int] = set()
         for record_index, record in enumerate(records):
+            if cls._is_incomplete_artifact_context(record):
+                continue
             references = {
                 reference
                 for value in cls._record_plate_reference_values(record)
@@ -1385,6 +1422,47 @@ class ResultFusionService:
         return cls._normalize_artifact_identifier(
             field.get("value") or field.get("raw_value")
         )
+
+    @classmethod
+    def _strict_record_artifact_identifiers(cls, record: dict[str, Any]) -> set[str]:
+        """Return complete IDs that may safely own a numbered visual crop.
+
+        OCR may place a figure's item list, such as ``6、10``, in the artifact
+        ID field. It remains useful text evidence, but is not an identity and
+        cannot bind a crop that is explicitly labelled ``M16:10``.
+        """
+
+        candidates: list[Any] = []
+        fields = record.get("fields", {})
+        if isinstance(fields, dict):
+            artifact_field = fields.get("artifact_id", {})
+            if isinstance(artifact_field, dict):
+                candidates.extend(
+                    (artifact_field.get("value"), artifact_field.get("raw_value"))
+                )
+        linkage = record.get("linkage", {})
+        identity = linkage.get("identity", {}) if isinstance(linkage, dict) else {}
+        if isinstance(identity, dict):
+            candidates.extend(
+                (
+                    identity.get("artifact_id_normalized"),
+                    identity.get("artifact_id_raw"),
+                )
+            )
+        hints = record.get("link_hints", {})
+        if isinstance(hints, dict):
+            candidates.extend(hints.get("artifact_ids", []))
+
+        identifiers = {
+            cls._normalize_artifact_identifier(value)
+            for value in candidates
+            if value is not None and str(value).strip()
+        }
+        return {
+            identifier
+            for identifier in identifiers
+            if cls._strict_artifact_id_pattern.fullmatch(identifier)
+        }
 
     @classmethod
     def _record_evidence_regions(
@@ -2005,16 +2083,35 @@ class ResultFusionService:
         text = re.sub(r"(?<=[A-Za-z0-9])\((?=\d{1,2}[:：])", "", text)
         return re.sub(r"(?<=\d)\)(?=[:：])", "", text)
 
-    @staticmethod
-    def _normalize_artifact_identifier(value: Any) -> str:
+    @classmethod
+    def _normalize_artifact_identifier(cls, value: Any) -> str:
         text = re.sub(
             r"\s+",
             "",
-            ResultFusionService._repair_identifier_punctuation(value).upper(),
+            cls._repair_identifier_punctuation(value).upper(),
         )
         # Color-plate captions often prefix the true ID with a tomb/unit label
         # such as 仲M4:3. Keep the Latin+digit identity for linking/catalog.
-        return ResultFusionService._tomb_unit_prefix_pattern.sub("", text)
+        text = cls._tomb_unit_prefix_pattern.sub("", text)
+        if cls._strict_artifact_id_pattern.fullmatch(text):
+            return text
+
+        # Typology drawings often label a crop as ``BI(M5:1)`` or
+        # ``AII(M15:6)``.  ``BI`` is the visual shorthand for B 型 I 式, not the
+        # artifact identity.  Keep the one complete ID enclosed in the label so
+        # the crop can join the body entry ``M5:1``.  Multiple IDs remain
+        # deliberately unnormalised: a shared caption must never pick one by
+        # position alone.
+        embedded = {
+            cls._normalize_artifact_identifier(match.group(1))
+            for match in cls._artifact_identifier_pattern.finditer(text)
+        }
+        embedded = {
+            identifier
+            for identifier in embedded
+            if cls._strict_artifact_id_pattern.fullmatch(identifier)
+        }
+        return next(iter(embedded)) if len(embedded) == 1 else text
 
     @classmethod
     def _color_plate_pages(
@@ -2896,6 +2993,8 @@ class ResultFusionService:
         ]
         entries: list[dict[str, Any]] = []
         for record_index, record in enumerate(records):
+            if self._is_incomplete_artifact_context(record):
+                continue
             if not self._is_meaningful_record(record):
                 continue
             if any(
@@ -3022,6 +3121,39 @@ class ResultFusionService:
             return True
         return len(populated) >= 2
 
+    @classmethod
+    def _is_incomplete_artifact_context(cls, record: dict[str, Any]) -> bool:
+        """Identify a context heading that must not become a visual artifact card.
+
+        Basic Research splits identity into site_id and sequence_no. A lone
+        ``M14`` is therefore a feature/tomb heading, whereas ``M14:1`` is an
+        artifact. Older extractions may also place that lone heading in
+        artifact_id, so handle both shapes before visual fusion.
+        """
+
+        if cls._strict_record_artifact_identifiers(record):
+            return False
+        fields = record.get("fields", {})
+        if not isinstance(fields, dict):
+            return False
+
+        def value_for(key: str) -> str:
+            field = fields.get(key, {})
+            if not isinstance(field, dict):
+                return ""
+            return str(field.get("value") or field.get("raw_value") or "").strip()
+
+        site_id = value_for("site_id")
+        sequence_no = value_for("sequence_no")
+        if site_id and not sequence_no:
+            return True
+
+        for key in ("artifact_id", "context_id"):
+            compact = cls._normalize_artifact_identifier(value_for(key))
+            if re.fullmatch(r"[A-Z]{1,6}\d+[A-Z]?", compact):
+                return True
+        return False
+
     @staticmethod
     def _display_evidence(record: dict[str, Any]) -> dict[str, Any] | None:
         fields = record.get("fields", {})
@@ -3060,6 +3192,8 @@ class ResultFusionService:
             return matched_records
 
         for record_index, record in enumerate(records):
+            if self._is_incomplete_artifact_context(record):
+                continue
             best_matches: dict[str, tuple[float, str, dict[str, Any]]] = {}
             strong_global_matches: dict[str, tuple[float, str, dict[str, Any]]] = {}
             source_page = self._record_source_page(record)
@@ -3160,12 +3294,32 @@ class ResultFusionService:
                 for region_id, match in selected_matches.items()
                 if match[0] >= self.link_hint_min_score
             }
+            selected_matches = self._prefer_nearby_exact_identifier_matches(
+                record=record,
+                selected_matches=selected_matches,
+            )
             selected_matches = self._anchor_caption_matches_to_item_numbers(
                 record=record,
                 selected_matches=selected_matches,
                 region_by_id=region_by_id,
                 relation_by_id=relation_by_id,
             )
+            strict_record_identifiers = self._strict_record_artifact_identifiers(record)
+            selected_matches = {
+                region_id: match
+                for region_id, match in selected_matches.items()
+                if not (
+                    match[2].get("kind") == "number"
+                    and (detected_identifiers := self._artifact_identifiers_in_text(
+                        self._region_text(match[2])
+                    ))
+                    and not any(
+                        self._identifiers_compatible(record_id, detected_id)
+                        for record_id in strict_record_identifiers
+                        for detected_id in detected_identifiers
+                    )
+                )
+            }
             if not selected_matches:
                 continue
             for score, hint_key, candidate in selected_matches.values():
@@ -3223,6 +3377,53 @@ class ResultFusionService:
                 matched_records.add(record_index)
         return matched_records
 
+    def _prefer_nearby_exact_identifier_matches(
+        self,
+        *,
+        record: dict[str, Any],
+        selected_matches: dict[str, tuple[float, str, dict[str, Any]]],
+    ) -> dict[str, tuple[float, str, dict[str, Any]]]:
+        """Prefer a nearby full-ID label over duplicate global references.
+
+        A typology graphic commonly uses a composite label such as
+        ``BI(M5:1)``.  Its bracketed ``M5:1`` is a complete identity and, when
+        the body record is within the normal three-page window, is the most
+        reliable bridge to that record.  A document-wide exact-ID fallback is
+        still valuable when no local label exists, but should not add distant
+        index/catalog references once this local anchor is available.
+        """
+
+        strict_record_identifiers = self._strict_record_artifact_identifiers(record)
+        if not strict_record_identifiers:
+            return selected_matches
+        source_page = self._record_source_page(record)
+        nearby_exact_number_ids = {
+            region_id
+            for region_id, (_, _, candidate) in selected_matches.items()
+            if candidate.get("kind") == "number"
+            and isinstance(candidate.get("page"), int)
+            and abs(int(candidate["page"]) - source_page) <= self.page_window
+            and any(
+                self._identifiers_compatible(record_id, detected_id)
+                for record_id in strict_record_identifiers
+                for detected_id in self._artifact_identifiers_in_text(
+                    self._region_text(candidate)
+                )
+            )
+        }
+        if not nearby_exact_number_ids:
+            return selected_matches
+
+        return {
+            region_id: match
+            for region_id, match in selected_matches.items()
+            if region_id in nearby_exact_number_ids
+            or (
+                isinstance(match[2].get("page"), int)
+                and abs(int(match[2]["page"]) - source_page) <= self.page_window
+            )
+        }
+
     def _anchor_caption_matches_to_item_numbers(
         self,
         *,
@@ -3240,6 +3441,7 @@ class ResultFusionService:
         artifact_hints = [
             hint for hint_key, hint in self._record_hints(record) if hint_key == "artifact_ids"
         ]
+        strict_record_identifiers = self._strict_record_artifact_identifiers(record)
         # A bare section/list number such as ``4. 玉管、珠...`` is not a visual
         # sequence. Item-only anchoring is safe only when the record explicitly
         # names the figure that owns that item number.
@@ -3264,11 +3466,24 @@ class ResultFusionService:
                 # visual and does not need item-number disambiguation.
                 continue
             best_number: tuple[int, float, str, dict[str, Any]] | None = None
+            rejected_explicit_identifier = False
             for number_id in number_ids:
                 number = region_by_id.get(number_id)
                 if number is None or number.get("kind") != "number":
                     continue
                 number_text = self._region_text(number)
+                detected_identifiers = self._artifact_identifiers_in_text(number_text)
+                # A label such as M16:10 is a complete artifact identity, not
+                # merely item 10. A shared figure-caption list ("6、10") must
+                # never claim that crop across a different context. Item-only
+                # anchoring remains available for genuinely bare labels.
+                if detected_identifiers and not any(
+                    self._identifiers_compatible(record_id, detected_id)
+                    for record_id in strict_record_identifiers
+                    for detected_id in detected_identifiers
+                ):
+                    rejected_explicit_identifier = True
+                    continue
                 exact_score = max(
                     (
                         self._identifier_text_score(
@@ -3336,9 +3551,11 @@ class ResultFusionService:
                     )
                 )
             ):
-                if artifact_hints:
+                if artifact_hints or rejected_explicit_identifier:
                     # An explicit artifact identifier may not inherit every crop
                     # under a shared caption when none of its number labels match.
+                    # Likewise, a bare caption list must not inherit an explicitly
+                    # different full identifier such as M16:10.
                     anchored.pop(region_id, None)
                 continue
 

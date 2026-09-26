@@ -99,6 +99,64 @@ def test_coze_adapter_normalizes_missing_fields_and_evidence() -> None:
     assert result["fields"]["texture"]["status"] == "missing"
 
 
+def test_figure_caption_is_always_treated_as_a_textual_reference() -> None:
+    config = ExtractionConfig(
+        template_id="legacy-template",
+        template_name="Legacy Template",
+        fields=[
+            ExtractionFieldSpec(
+                key="figure_caption",
+                label="Figure Caption",
+                type="number",
+            )
+        ],
+    )
+
+    assert config.fields[0].type == "string"
+
+
+def test_structured_adapter_marks_a_type_mismatch_for_review_without_failing_page() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+    config = ExtractionConfig(
+        template_id="custom-template",
+        template_name="Custom Template",
+        fields=[
+            ExtractionFieldSpec(
+                key="custom_counter",
+                label="Custom Counter",
+                type="number",
+            )
+        ],
+    )
+    chunk = PageChunk(
+        chunk_id="job:page:140",
+        page_no=140,
+        text="图3-4C M3:4",
+        blocks=[],
+    )
+
+    result = engine._normalize_record(
+        {
+            "record_type": "artifact",
+            "fields": {
+                "custom_counter": {
+                    "value": "图3-4C",
+                    "status": "valid",
+                    "evidence": [{"page": 140, "quote": "图3-4C"}],
+                }
+            },
+        },
+        chunk,
+        config,
+    )
+
+    field = result["fields"]["custom_counter"]
+    assert field["raw_value"] == "图3-4C"
+    assert field["value"] is None
+    assert field["status"] == "needs_review"
+    assert any("类型不一致" in warning for warning in result["warnings"])
+
+
 def test_coze_adapter_resolves_normalized_bbox_from_matching_pdf_block() -> None:
     engine = object.__new__(CozeExtractionEngine)
     config = ExtractionConfig(
@@ -234,8 +292,12 @@ def test_llm_prompt_defines_fluent_but_grounded_field_value_policy() -> None:
     assert "measurements.value" in system_prompt
     assert "morphological_description.value" in system_prompt
     assert "不得补充原文没有的器物事实" in system_prompt
+    assert "BI(M5:1)" in system_prompt
+    assert "archaeological_card_contract" not in system_prompt
     assert user_prompt["field_value_policy"]["measurements"]["value"].startswith("整理为简洁的")
     assert "按器物部位" in user_prompt["field_value_policy"]["morphological_description"]["value"]
+    assert "archaeological_card_contract" not in user_prompt
+    assert "BI(M5:1)" in user_prompt["compact_output_contract"]["record_eligibility"]
 
 
 def test_chunk_merge_discards_empty_or_unidentified_single_field_fragments() -> None:
@@ -529,6 +591,64 @@ def test_coze_adapter_decodes_output_when_response_contains_run_id() -> None:
 
     assert payload["chunk_id"] == "job:page:1"
     assert payload["records"] == []
+
+
+def test_decode_payload_repairs_trailing_commas_and_fences() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    payload = engine._decode_payload(
+        """```json
+        {
+          "schema_version": "1.0",
+          "chunk_id": "job:page:142",
+          "records": [
+            {"record_type": "artifact", "fields": {"artifact_id": {"value": "M2:4"}}},
+          ],
+        }
+        ```"""
+    )
+
+    assert payload["chunk_id"] == "job:page:142"
+    assert payload["records"][0]["fields"]["artifact_id"]["value"] == "M2:4"
+
+
+def test_decode_payload_accepts_top_level_record_array() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    payload = engine._decode_payload(
+        '[{"record_type": "artifact", "fields": {"artifact_id": {"value": "M2:5"}}}]'
+    )
+
+    assert payload["records"][0]["fields"]["artifact_id"]["value"] == "M2:5"
+
+
+def test_decode_payload_salvages_truncated_records_json() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    payload = engine._decode_payload(
+        '{"schema_version":"1.0","records":['
+        '{"record_type":"artifact","fields":{"artifact_id":{"value":"M2:4","status":"valid"'
+    )
+
+    assert payload["records"][0]["fields"]["artifact_id"]["value"] == "M2:4"
+
+
+def test_decode_payload_treats_unrecoverable_truncation_as_5054() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    with pytest.raises(DomainError) as exc_info:
+        engine._decode_payload('{"records": [')
+
+    assert exc_info.value.code == 5054
+
+
+def test_decode_payload_still_rejects_invalid_complete_json() -> None:
+    engine = object.__new__(CozeExtractionEngine)
+
+    with pytest.raises(DomainError) as exc_info:
+        engine._decode_payload('{"records": [not-json]}')
+
+    assert exc_info.value.code == 5022
 
 
 def test_coze_http_engine_calls_deployed_service(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1090,6 +1210,120 @@ def test_groq_truncated_output_is_bisected_and_merged(
     assert {record["fields"]["artifact_id"]["value"] for record in records} == {
         "H1:1",
         "H2:1",
+    }
+
+
+def test_stop_reason_truncated_json_is_bisected_and_merged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: httpx.Timeout) -> None:
+            del timeout
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, object],
+            **kwargs: object,
+        ) -> httpx.Response:
+            del kwargs
+            requests.append(json)
+            user_input = json_module.loads(json["messages"][1]["content"])  # type: ignore[index]
+            chunk_id = user_input["chunk_id"]
+            if ":retry:" not in chunk_id:
+                return httpx.Response(
+                    200,
+                    json={
+                        "choices": [
+                            {
+                                "finish_reason": "stop",
+                                "message": {"content": '{"records": ['},
+                            }
+                        ]
+                    },
+                    request=httpx.Request("POST", url),
+                )
+
+            source_text = "\n".join(block["text"] for block in user_input.get("ocr_blocks", []))
+            artifact_id = "M2:4" if "M2:4" in source_text else "M2:5"
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": json_module.dumps(
+                                    {
+                                        "schema_version": "1.0",
+                                        "chunk_id": chunk_id,
+                                        "records": [
+                                            {
+                                                "record_type": "artifact",
+                                                "fields": {
+                                                    "artifact_id": {
+                                                        "value": artifact_id,
+                                                        "status": "valid",
+                                                        "evidence": [{"quote": artifact_id}],
+                                                    }
+                                                },
+                                            }
+                                        ],
+                                    }
+                                )
+                            },
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    json_module = json
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    engine = OpenAICompatibleExtractionEngine(
+        Settings(
+            _env_file=None,
+            extraction_engine="llm",
+            llm_provider="deepseek",
+            llm_api_key="test-key",
+            llm_input_chunk_chars=2000,
+            llm_chunk_overlap_chars=0,
+        )
+    )
+    config = ExtractionConfig(
+        template_id="basic",
+        template_name="Basic",
+        fields=[ExtractionFieldSpec(key="artifact_id", label="Artifact ID", type="string")],
+    )
+
+    records = asyncio.run(
+        engine.extract(
+            PageChunk(
+                chunk_id="job:page:142",
+                page_no=142,
+                text="M2:4 " + "线图残片" * 80 + "\nM2:5 " + "线图残片" * 80,
+                blocks=[
+                    {"text": "M2:4 " + "线图残片" * 80},
+                    {"text": "M2:5 " + "线图残片" * 80},
+                ],
+            ),
+            config,
+        )
+    )
+
+    assert len(requests) == 3
+    assert {record["fields"]["artifact_id"]["value"] for record in records} == {
+        "M2:4",
+        "M2:5",
     }
 
 

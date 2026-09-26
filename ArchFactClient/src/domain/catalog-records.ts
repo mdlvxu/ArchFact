@@ -142,8 +142,34 @@ export function isCaptionOnlySparseCatalogRecord(record: ExtractionRecord) {
   )
 }
 
+function catalogPreviewPages(record: ExtractionRecord) {
+  return new Set(
+    [...(record.source_pages ?? []), ...(record.associated_pages ?? [])].filter(
+      (page): page is number => typeof page === 'number',
+    ),
+  )
+}
+
+function isSparseIdentityCatalogCard(record: ExtractionRecord) {
+  return (
+    bodyFieldKeys.every((key) => !hasValue(record.fields[key])) &&
+    catalogTextEvidenceSummary(record).length < 12
+  )
+}
+
+function hasBoundLineDrawing(record: ExtractionRecord) {
+  return Boolean(record.primary_artifact_region_id || record.thumbnail_region_id)
+}
+
+/** Single-page ID/caption stubs with no 器物线图 should not appear in the browse catalog. */
+export function isUnboundSparseSinglePageCatalogRecord(record: ExtractionRecord) {
+  if (hasBoundLineDrawing(record)) return false
+  if (catalogPreviewPages(record).size > 1) return false
+  return isSparseIdentityCatalogCard(record)
+}
+
 export function catalogRepresentativeScore(record: ExtractionRecord) {
-  return Object.entries(record.fields).reduce((score, [fieldKey, field]) => {
+  const fieldScore = Object.entries(record.fields).reduce((score, [fieldKey, field]) => {
     if (!hasValue(field)) return score
     const weight = bodyFieldWeights[fieldKey] ?? 2
     const hasOwnPageTextEvidence = field.evidence.some(
@@ -153,6 +179,11 @@ export function catalogRepresentativeScore(record: ExtractionRecord) {
     )
     return score + weight + Number(hasOwnPageTextEvidence)
   }, 0)
+  // A body paragraph recovered as text evidence is more useful than an empty
+  // drawing-page stub, even if a previous extraction did not populate every
+  // structured field. This lets a crop-bearing sibling supply the image while
+  // the catalog keeps the record that actually explains the artifact.
+  return fieldScore + (catalogTextEvidenceSummary(record).length >= 12 ? 9 : 0)
 }
 
 /**
@@ -161,7 +192,11 @@ export function catalogRepresentativeScore(record: ExtractionRecord) {
  * the record containing the richest body text.
  */
 export function groupCatalogRecordsByEntity(records: ExtractionRecord[]) {
-  const catalogRecords = records.filter((record) => !isCaptionOnlySparseCatalogRecord(record))
+  const catalogRecords = records.filter(
+    (record) =>
+      !isCaptionOnlySparseCatalogRecord(record) &&
+      !isUnboundSparseSinglePageCatalogRecord(record),
+  )
   const groups = new Map<string, { index: number; record: ExtractionRecord }>()
   catalogRecords.forEach((record, index) => {
     const key = record.entity_id ? `entity:${record.entity_id}` : `record:${record.id}`

@@ -1,11 +1,17 @@
-# Only publish the two applications and repository documentation
+# Only publish the two applications, launcher scripts, and repository documentation
 /*
 !/.gitignore
 !/README.md
 !/README中文.md
+!/SETUP_WINDOWS.md
 !/CHANGELOG.md
 !/CHANGELOG中文.md
-!/SETUP_WINDOWS.md
+!/start-archfact.cmd
+!/start-archfact.ps1
+!/stop-archfact.cmd
+!/stop-archfact.ps1
+!/status-archfact.cmd
+!/status-archfact.ps1
 !/ArchFactClient/
 !/ArchFactServer/
 
@@ -38,6 +44,8 @@
 
 # Large local model weights
 **/models/**/*.pt
+**/models/paddleocr/**
+!**/models/paddleocr/README.md
 
 # Local handoff and conversation exports
 **/ARCHFACT_CHATGPT_HANDOFF.md

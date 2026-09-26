@@ -2,6 +2,113 @@
 
 [English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
 
+## quality-baseline-v6 — 2026-09-24
+
+Main changes since `quality-baseline-v5` (2026-09-20).
+
+### Extraction templates and card scope
+
+- Add editable system public prompts, per-field prompt editing, template prompt preview, and a current Latest Artifact Card Template alongside the preserved Basic Research Template
+- Keep text-only provenance records in storage, but show and validate only deduplicated artifact entities with a linked crop
+- Align experiment headers, full-verification totals, human samples, and exports to the same crop-bound card count; existing experiments backfill the corrected count without PDF re-extraction
+
+### Assertion experiments and exports
+
+- Add isolated experiment baselines: V1 uses LLM Assertions V1 and a fixed cohort of 18 human samples; V2 uses LLM Assertions V2 while reusing that cohort for comparable metrics
+- Add pause, resume, and terminate controls for full machine verification; archived experiments are view/export only
+- Add machine-verification result JSON and full per-card Excel export
+
+### Artifact matching precision
+
+- Normalize composite typology graphic labels such as `BI(M5:1)` and `AII(M15:6)` to the complete identifier inside the parentheses; `BI` and `AII` remain type/style context, never artifact IDs
+- Prefer an exact identifier in the three-page local window when connecting body text and crops; fall back to document-wide exact-ID matching only when no local match exists
+- When one entity has both a graphic crop and body text, show the richer body record in the catalog; display `—` for a missing category instead of misrepresenting the source page as a category
+
+### Interface, launchers, and documentation
+
+- Complete Chinese/English localization for the experiment bar, run progress, experiment switcher, and export menu
+- Harden the Windows launcher state and stop script against stale PIDs after restart
+- Rewrite bilingual operator workflows and refresh the Chinese/English process screenshots
+
+### Verification
+
+- Frontend: `pnpm build` passed
+- Backend: `tests/test_machine_verification.py` passed (10 tests)
+- Backend matching regression: 81 passing tests across `test_result_fusion.py`, `test_artifact_entity_linker.py`, and `test_extraction_engine.py`
+
+---
+
+## quality-baseline-v5 — 2026-09-20
+
+Main changes since `quality-baseline-v4` (2026-09-07).
+
+### PaddleOCR 3.x with PP-OCRv6_small
+
+- Default OCR is PaddleOCR 3.7 (`ppocr3`) plus `PP-OCRv6_small`; download via BOS into `models/paddleocr` (weights stay gitignored)
+- Hardware auto-tune: small/tiny/v4 can use up to 8 OCR workers; medium/server/v5 stay capped at 2 to avoid CPU OOM
+- Worker ready handshake so model load is not counted against the page timeout (default 180s); timeout retry downscales `max_side` 1600 → 960
+- Page OCR cache keys on provider/model/version/text/blocks; timeout and worker counts no longer bust the cache
+- Number regions reuse page OCR; leftover crop OCR runs in parallel with a 20s region timeout
+
+### Extraction robustness and UI
+
+- Truncated LLM JSON is repaired or bisected (5054 / 5022) instead of failing the whole page
+- The extract button stays disabled while a job is running or stopping and shows progress percent
+
+### Publish layout and dead code
+
+- Root `.gitignore` whitelist publishes launcher scripts and bilingual changelogs
+- Remove unused frontend modules (`DocumentSheet`, `ExtractionResults`, `api/modules/user`, `stores/app`)
+- Extraction routes no longer re-export application helpers; tests import from application/domain
+- SETUP_WINDOWS documents `ppocr3` + `PP-OCRv6_small` as the recommended OCR path; 2.9 remains a fallback
+
+### Tests
+
+- Frontend: `pnpm test:run` 83 passed, 1 skipped
+- Backend: `pytest` 213 passed
+- Updated coverage for OCR ready handshake, bundled model dirs, hardware worker caps, and JSON salvage
+
+---
+
+## quality-baseline-v4 — 2026-09-07
+
+Main changes since `quality-baseline-v3` (2026-08-13).
+
+### Large-report import and job resume
+
+- Default PDF upload cap is 512 MB; the Vite proxy and client timeouts scale with file size
+- The page navigator shows upload / save / parse progress instead of freezing on `arrayBuffer()`
+- Multipart uploads no longer send a boundary-less `Content-Type`, and PDF.js blob URLs stay alive until the document is released
+- FastAPI startup resumes interrupted extraction jobs and skips pages that already finished
+- Stale rematch, AI verification, and quality-evaluation runs are marked failed after process restart
+
+### Hardware auto-tune and MongoDB
+
+- `HARDWARE_AUTO_TUNE=true` (default) sets OCR workers, discovery concurrency, and page-batch size from the machine
+- Unique `documents.sha256` reuses an already-stored PDF instead of writing GridFS twice
+- Compound indexes plus TTL on `job_events` (60d) and semantic cache (90d)
+- Unique partial index for one active verification session per job
+
+### Restore the job that is still running
+
+- `GET /extraction-jobs/recent/latest?include_active=true` prefers queued / extracting jobs over the latest completed one
+- After refresh, the data-extraction page attaches to the in-progress report instead of an older completed PDF left in `localStorage`
+- The page-navigator list fills the leftover column height so the last thumbnail and page label are not clipped
+
+### Backend structure
+
+- Domain helpers live under `app/domain/`; view/enrichment mapping under `app/application/`
+- Extraction routes are split into jobs / records / rematches / verification, same `/extraction-jobs` prefix
+- `MongoRepository` is a facade over persistence mixins; `result_fusion` stays a single module and is now v24
+
+### Tests
+
+- Frontend: 83 passed, 1 skipped (`pnpm test:run`)
+- Backend: 190 passed (`pytest`)
+- New coverage for PDF import progress, hardware auto-tune, Mongo schema, and machine verification
+
+---
+
 ## quality-baseline-v3 — 2026-08-13
 
 Main changes since `quality-baseline-v2` (2026-08-12).

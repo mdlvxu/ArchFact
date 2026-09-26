@@ -2,6 +2,113 @@
 
 [English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
 
+## quality-baseline-v6 — 2026-09-24
+
+相对 `quality-baseline-v5`（2026-09-20）的主要修改与优化。
+
+### 提取模板与器物卡片范围
+
+- 新增系统公共提示词编辑、字段提示词编辑、模板提示词预览；新增“最新器物卡片提取模板”，并保留基础研究模板
+- 纯文本证据记录继续保留在库中，但目录与机器校验仅展示、使用已关联裁剪图且按器物实体去重的卡片
+- 实验摘要、全量校验、人工样本和导出统一使用同一套有效器物统计口径；已有实验无需重提 PDF 即可回填正确数量
+
+### 断言实验与导出
+
+- 新增独立实验基线：V1 使用 LLM 断言 V1 和固定 18 条人工样本；V2 使用 LLM 断言 V2 并复用该样本，以便比较指标
+- 全量机器校验新增暂停、继续和终止；历史实验仅支持查看与导出
+- 新增校验结果 JSON 与逐器物全量机器校验 Excel 明细导出
+
+### 器物关联精度
+
+- 将类型学线图复合标注（如 `BI(M5:1)`、`AII(M15:6)`）规范为括号内的完整器物号；`BI`、`AII` 等仅保留为“型—式”上下文，不再被当作器物编号
+- 对完整器物号实行近页优先：前后 3 页内存在精确编号时优先关联该正文与裁剪图；近页无结果时才回退到全文精确编号关联
+- 同一器物实体同时存在线图裁剪与正文时，目录优先展示正文更完整的记录；类别缺失时统一显示“—”，不再误将来源页显示为类别
+
+### 界面、启动脚本与文档
+
+- 完善实验栏、运行进度、实验切换下拉框和导出菜单的中英文切换
+- 强化 Windows 启动状态与停止脚本，避免重启后误处理失效 PID
+- 重写中英文操作流程，并更新中英文流程截图
+
+### 验证
+
+- 前端：`pnpm build` 通过
+- 后端：`tests/test_machine_verification.py` 10 项通过
+- 后端关联回归：`test_result_fusion.py`、`test_artifact_entity_linker.py`、`test_extraction_engine.py` 共 81 项通过
+
+---
+
+## quality-baseline-v5 — 2026-09-20
+
+相对 `quality-baseline-v4`（2026-09-07）的主要修改与优化。
+
+### PaddleOCR 3.x 与 PP-OCRv6_small
+
+- 默认 OCR 为 PaddleOCR 3.7（`ppocr3`）+ `PP-OCRv6_small`；通过 BOS 下载到 `models/paddleocr`（权重仍不进 git）
+- 硬件自适应：small/tiny/v4 最多 8 个 OCR worker；medium/server/v5 上限仍为 2，避免 CPU 内存打满
+- Worker 就绪握手，模型加载不计入页面超时（默认 180 秒）；超时后将 `max_side` 从 1600 降到 960 重试
+- 页 OCR 缓存按 provider/model/version/text/blocks 命中；超时和 worker 数不再让缓存失效
+- 编号区域复用整页 OCR；剩余裁切并行识别，单区域超时 20 秒
+
+### 抽取稳健性与界面
+
+- LLM 截断 JSON 会修复或对半拆分（5054 / 5022），避免整页语义抽取失败
+- 任务运行或停止中禁用「开始提取」，并显示进度百分比
+
+### 发布布局与死代码
+
+- 根目录 `.gitignore` 白名单纳入启动脚本和双语更新日志
+- 删除未使用的前端模块（`DocumentSheet`、`ExtractionResults`、`api/modules/user`、`stores/app`）
+- 抽取路由不再二次导出 application 辅助函数；测试从 application/domain 直接导入
+- SETUP_WINDOWS 将 `ppocr3` + `PP-OCRv6_small` 写为推荐 OCR；2.9 仍可作为回退
+
+### 测试
+
+- 前端：`pnpm test:run` 83 通过、1 跳过
+- 后端：`pytest` 213 通过
+- 更新：OCR 就绪握手、内置模型目录、硬件 worker 上限、JSON 挽救等用例
+
+---
+
+## quality-baseline-v4 — 2026-09-07
+
+相对 `quality-baseline-v3`（2026-08-13）的主要修改与优化。
+
+### 大报告导入与任务续跑
+
+- 默认上传上限 512 MB；Vite 代理和前端超时随文件大小拉长
+- 页面导航展示上传 / 保存 / 解析进度，避免 `arrayBuffer()` 卡住界面
+- 上传不再手写无 boundary 的 `Content-Type`；PDF.js 的 blob URL 在文档释放前保持有效
+- FastAPI 启动时恢复中断的抽取任务，并跳过已经完成的页面
+- 进程重启后，将僵死的重匹配、AI 复核和质量评估标记为失败
+
+### 硬件自适应与 MongoDB
+
+- 默认 `HARDWARE_AUTO_TUNE=true`，按本机 CPU/内存/GPU 设置 OCR 进程数、发现并发和分页批大小
+- `documents.sha256` 唯一，相同 PDF 不再二次写入 GridFS
+- 补充复合索引；`job_events` 60 天 TTL，语义缓存 90 天 TTL
+- 每个任务仅允许一个进行中的核验会话（部分唯一索引）
+
+### 刷新后接上正在跑的任务
+
+- `GET /extraction-jobs/recent/latest?include_active=true` 优先返回排队 / 抽取中的任务
+- 刷新数据提取页时，不再被 `localStorage` 里上一本已完成报告盖住当前任务
+- 页面导航列表占满剩余高度，最后一页缩略图和页码不再被裁切
+
+### 后端结构
+
+- 领域辅助放到 `app/domain/`，视图与字段补全放到 `app/application/`
+- 抽取路由按 jobs / records / rematches / verification 拆分，URL 前缀仍是 `/extraction-jobs`
+- `MongoRepository` 改为 mixin 门面；`result_fusion` 仍为单文件，版本升至 v24
+
+### 测试
+
+- 前端：`pnpm test:run` 83 通过、1 跳过
+- 后端：`pytest` 190 通过
+- 新增：PDF 导入进度、硬件自适应、Mongo 索引、机器核验等用例
+
+---
+
 ## quality-baseline-v3 — 2026-08-13
 
 相对 `quality-baseline-v2`（2026-08-12）的主要修改与优化。

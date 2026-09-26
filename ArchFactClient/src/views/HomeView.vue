@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Upload } from '@element-plus/icons-vue'
+import { ArrowDown, Upload } from '@element-plus/icons-vue'
+import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
@@ -22,12 +23,11 @@ import {
   getVerificationSession,
   getUploadedDocument,
   renderDocumentPage,
-  rebindRegionRelation,
   retryFailedExtractionPages,
-  updateRegionRelationReview,
   updateVerificationSessionItem,
   uploadPdfDocument,
 } from '@/api/modules/extraction'
+import { ApiError } from '@/api/http'
 import ArchaeologicalCatalogs from '@/components/business/ArchaeologicalCatalogs.vue'
 import ContentPreview from '@/components/business/ContentPreview.vue'
 import ExtractionSettings from '@/components/business/ExtractionSettings.vue'
@@ -44,10 +44,17 @@ import {
   buildPreviewAnnotations,
   ensureSelectedPrimaryArtifactAnnotation,
 } from '@/domain/preview-annotations'
+import { hasArtifactCropBinding } from '@/domain/preview-card-visibility'
 import { resolvePreviewDocumentPage } from '@/domain/preview-document-page'
 import { filterExtractedPdfPages } from '@/domain/preview-pages'
 import { getDefaultExtractionPages } from '@/domain/page-selection'
-import { useI18n } from '@/i18n'
+import {
+  createPdfImportProgress,
+  MAX_PDF_UPLOAD_BYTES,
+  uploadPercentFromEvent,
+  type PdfImportProgress,
+} from '@/domain/pdf-import'
+import { localizeProcessingLog, useI18n } from '@/i18n'
 import type {
   ExtractionConfigPayload,
   ExtractionJob,
@@ -55,7 +62,6 @@ import type {
   PageAnnotations,
   PreviewAnnotation,
   RecordEvidenceContext,
-  RegionRelation,
 } from '@/types/extraction'
 import type { PdfPageItem } from '@/types/pdf'
 import type {
@@ -86,7 +92,6 @@ const activeAnnotationId = ref('')
 const selectedRecordId = ref('')
 const catalogDetailsOpen = ref(false)
 const reviewSavingId = ref('')
-const relationSavingId = ref('')
 const stopped = ref(false)
 const progress = ref(0)
 const fileInputRef = ref<HTMLInputElement>()
@@ -99,6 +104,7 @@ const pdfFileName = ref('')
 const previewUrl = ref('')
 const previewLoading = ref(false)
 const uploadLoading = ref(false)
+const importProgress = ref<PdfImportProgress | null>(null)
 const serverDocumentId = ref('')
 const currentJobId = ref('')
 const jobRunning = ref(false)
@@ -127,6 +133,8 @@ let jobPollFailureCount = 0
 let annotationRequestId = 0
 let evidenceContextRequestId = 0
 const lastExtractionJobStorageKey = 'archfact:last-extraction-job-id'
+const lastExtractionDocumentStorageKey = 'archfact:last-extraction-document-id'
+let pdfObjectUrl = ''
 
 const logs = ref<ProcessLog[]>([])
 
@@ -249,6 +257,28 @@ const evidenceContextAnnotations = computed<PreviewAnnotation[]>(() => {
   )
 })
 
+/**
+ * The catalog is a stable document-level list. A card is created only when a
+ * detected artifact crop is linked anywhere in the document; page navigation
+ * and selecting one card must never hide its siblings.
+ */
+const previewCatalogCardRecords = computed(() => {
+  const sourceRecords =
+    previewMode.value === 'verify' ? verificationRecords.value : extractionRecords.value
+  const cropBoundEntityIds = new Set(
+    sourceRecords
+      .filter(hasArtifactCropBinding)
+      .map((record) => record.entity_id)
+      .filter((entityId): entityId is string => Boolean(entityId)),
+  )
+
+  return previewCatalogRecords.value.filter(
+    (record) =>
+      hasArtifactCropBinding(record) ||
+      Boolean(record.entity_id && cropBoundEntityIds.has(record.entity_id)),
+  )
+})
+
 const previewRegions = computed(
   () => recordEvidenceContext.value?.regions ?? pageAnnotationData.value?.regions ?? [],
 )
@@ -292,7 +322,11 @@ function changeTab(tab: WorkspaceTab) {
 }
 
 /** 调用第三页工作区导出当前机器校验结果。 */
-function exportVerificationResult() {
+function exportVerificationResult(kind: 'snapshot' | 'full-details' = 'snapshot') {
+  if (kind === 'full-details') {
+    void machineVerificationRef.value?.exportFullMachineDetails()
+    return
+  }
   machineVerificationRef.value?.exportResult()
 }
 
@@ -304,7 +338,9 @@ function clearLogs() {
 
 /** 将当前日志导出为本地文本文件 */
 function exportLogs() {
-  const content = logs.value.map((item) => `[${item.status}] ${item.text}`).join('\n')
+  const content = logs.value
+    .map((item) => `[${item.status}] ${localizeProcessingLog(item.text)}`)
+    .join('\n')
   const blob = new globalThis.Blob([content || 'No processing logs'], {
     type: 'text/plain;charset=utf-8',
   })
@@ -349,6 +385,44 @@ function applyJobState(job: ExtractionJob) {
   }))
 }
 
+/**
+ * 被停止的任务也可能已经写入部分器物卡片。恢复这些结果时，不能只因任务
+ * 没有走到 completed 而把用户留在空白预览页。
+ */
+async function loadStoppedJobResult(job: ExtractionJob): Promise<number> {
+  if (!pdfPages.value.length && job.document_id) {
+    try {
+      await hydrateJobDocumentPages(job)
+    } catch {
+      // 页面缩略图失败不应妨碍已保存卡片的恢复。
+    }
+  }
+
+  try {
+    extractionRecords.value = await getExtractionRecords(job.id)
+  } catch (recordsError: unknown) {
+    extractionRecords.value = []
+    ElMessage.warning(
+      recordsError instanceof Error ? recordsError.message : t('home.progressFailed'),
+    )
+  }
+
+  if (extractionRecords.value.length > 0) {
+    previewMode.value = 'browse'
+    verificationSession.value = null
+    verificationRecords.value = []
+    previewSelectedPage.value = null
+    activeAnnotationId.value = ''
+    selectedRecordId.value = ''
+    pageAnnotationData.value = null
+    recordEvidenceContext.value = null
+    ++evidenceContextRequestId
+    activeTab.value = 'Data Preview'
+  }
+
+  return extractionRecords.value.length
+}
+
 async function pollExtractionJob(jobId: string) {
   try {
     const job = await getExtractionJob(jobId)
@@ -372,17 +446,21 @@ async function pollExtractionJob(jobId: string) {
           recordsError instanceof Error ? recordsError.message : t('home.progressFailed'),
         )
       }
-      previewMode.value = 'browse'
-      verificationSession.value = null
-      verificationRecords.value = []
       jobRunning.value = false
-      previewSelectedPage.value = null
-      activeAnnotationId.value = ''
-      selectedRecordId.value = ''
-      pageAnnotationData.value = null
-      recordEvidenceContext.value = null
-      ++evidenceContextRequestId
-      activeTab.value = 'Data Preview'
+      const keepVerification =
+        previewMode.value === 'verify' && Boolean(verificationSession.value)
+      if (!keepVerification) {
+        previewMode.value = 'browse'
+        verificationSession.value = null
+        verificationRecords.value = []
+        previewSelectedPage.value = null
+        activeAnnotationId.value = ''
+        selectedRecordId.value = ''
+        pageAnnotationData.value = null
+        recordEvidenceContext.value = null
+        ++evidenceContextRequestId
+        activeTab.value = 'Data Preview'
+      }
       if (job.status === 'completed_with_warnings') {
         ElMessage.warning(t('home.completedWithWarnings', {
           count: extractionRecords.value.length,
@@ -400,7 +478,13 @@ async function pollExtractionJob(jobId: string) {
     }
     if (job.status === 'cancelled') {
       jobRunning.value = false
-      ElMessage.info(t('home.cancelled'))
+      const recordCount = await loadStoppedJobResult(job)
+      ElMessage.info(recordCount > 0
+        ? t('home.cancelledWithSavedRecords', { count: recordCount })
+        : t('home.cancelledBeforeCards', {
+          current: job.progress.current,
+          total: job.progress.total,
+        }))
       return
     }
     jobPollTimer = globalThis.setTimeout(() => void pollExtractionJob(jobId), 1200)
@@ -521,6 +605,9 @@ async function startExtraction(config: ExtractionConfigPayload) {
     const created = await createExtractionJob(serverDocumentId.value, config)
     currentJobId.value = created.job_id
     globalThis.localStorage.setItem(lastExtractionJobStorageKey, created.job_id)
+    if (serverDocumentId.value) {
+      globalThis.localStorage.setItem(lastExtractionDocumentStorageKey, serverDocumentId.value)
+    }
     extractionTaskPages.value = [...config.pages]
     ElMessage.success(t('home.created'))
     await pollExtractionJob(created.job_id)
@@ -536,7 +623,43 @@ async function startExtraction(config: ExtractionConfigPayload) {
 
 /** 打开操作系统的 PDF 文件选择窗口 */
 function openPdfPicker() {
+  if (uploadLoading.value) return
   fileInputRef.value?.click()
+}
+
+function patchImportProgress(patch: Partial<PdfImportProgress>) {
+  if (!importProgress.value?.active) return
+  importProgress.value = { ...importProgress.value, ...patch }
+}
+
+async function releasePdfDocument() {
+  const current = pdfDocument.value
+  const objectUrl = pdfObjectUrl
+  pdfDocument.value = undefined
+  pdfObjectUrl = ''
+  if (current) {
+    await Promise.race([
+      current.destroy().catch(() => undefined),
+      new Promise<void>((resolve) => {
+        globalThis.setTimeout(resolve, 2500)
+      }),
+    ])
+  }
+  if (objectUrl) URL.revokeObjectURL(objectUrl)
+}
+
+function loadPdfDocument(
+  file: File,
+  onProgress: (loaded: number, total: number) => void,
+): Promise<PDFDocumentProxy> {
+  const source = file.slice(0, file.size, file.type || 'application/pdf')
+  const objectUrl = URL.createObjectURL(source)
+  pdfObjectUrl = objectUrl
+  const loadingTask = getDocument({ url: objectUrl })
+  loadingTask.onProgress = (event) => {
+    onProgress(event.loaded, event.total || file.size)
+  }
+  return loadingTask.promise
 }
 
 /** 将 PDF 指定页渲染为图片，供缩略图和主预览共同使用 */
@@ -547,7 +670,7 @@ async function renderPdfPage(
   document = pdfDocument.value,
 ) {
   if (!document) {
-    throw new Error('PDF 文档尚未加载')
+    throw new Error(t('home.pdfNotLoaded'))
   }
 
   const page = await document.getPage(pageNumber)
@@ -556,7 +679,7 @@ async function renderPdfPage(
   const context = canvas.getContext('2d')
 
   if (!context) {
-    throw new Error('当前浏览器不支持 PDF 画布渲染')
+    throw new Error(t('home.pdfRenderUnsupported'))
   }
 
   canvas.width = Math.ceil(viewport.width)
@@ -586,7 +709,7 @@ async function renderSelectedPage(pageNumber: number) {
         const item = pdfPages.value.find((candidate) => candidate.page === pageNumber)
         if (item) item.thumbnailUrl = restoredUrl
       }
-      if (!restoredUrl) throw new Error('当前页面预览图尚未生成')
+      if (!restoredUrl) throw new Error(t('home.pagePreviewUnavailable'))
       if (requestId === previewRequestId) previewUrl.value = restoredUrl
       return
     }
@@ -693,7 +816,6 @@ async function selectCatalogRecord(record: ExtractionRecord, preferredAnnotation
   selectedRecordId.value = record.id
   catalogDetailsOpen.value = true
   activeAnnotationId.value = preferredAnnotationId
-  pageAnnotationData.value = null
   try {
     const context = await getRecordEvidenceContext(currentJobId.value, record.id)
     if (requestId !== evidenceContextRequestId || selectedRecordId.value !== record.id) return
@@ -707,6 +829,10 @@ async function selectCatalogRecord(record: ExtractionRecord, preferredAnnotation
     previewSelectedPage.value = textPage
     activePage.value = textPage
     void renderSelectedPage(textPage)
+    // Keep the page-wide card collection available after switching to the
+    // selected record's evidence context. This data is deliberately separate
+    // from the single-record context used by the center preview.
+    void loadPageAnnotations(textPage)
   } catch (error: unknown) {
     if (requestId !== evidenceContextRequestId) return
     recordEvidenceContext.value = null
@@ -759,20 +885,43 @@ async function reviewRecord(
 }
 
 async function startVerification(session: VerificationSession) {
-  if (!currentJobId.value) return
+  const jobId = currentJobId.value || session.job_id
+  if (!jobId || !session.id) {
+    ElMessage.error(t('verification.startFailed'))
+    return
+  }
+  if (!currentJobId.value) currentJobId.value = jobId
+  verificationSession.value = session
+  verificationAiRun.value = null
+  previewMode.value = 'verify'
+  clearPreviewSelection()
+  activeTab.value = 'Data Preview'
   try {
-    const records = await getVerificationSessionRecords(currentJobId.value, session.id)
-    verificationSession.value = session
-    verificationAiRun.value = null
+    const records = await getVerificationSessionRecords(jobId, session.id)
+    // 恢复任务的异步收尾不要把人工核验样本冲掉。
+    if (verificationSession.value?.id !== session.id) return
     verificationRecords.value = records
-    previewMode.value = 'verify'
-    clearPreviewSelection()
-    activeTab.value = 'Data Preview'
     const first = records[0]
     if (first) await selectCatalogRecord(first)
   } catch (error: unknown) {
     ElMessage.error(error instanceof Error ? error.message : t('verification.startFailed'))
   }
+}
+
+async function returnToVerificationResult(versionLabel: number, conflictCount: number) {
+  ElMessage.success(t('verification.completed', { version: versionLabel }))
+  if (conflictCount > 0) {
+    ElMessage.warning(t('verification.aiConflictsRecorded', { count: conflictCount }))
+  }
+  previewMode.value = 'browse'
+  verificationSession.value = null
+  verificationAiRun.value = null
+  verificationRecords.value = []
+  clearPreviewSelection()
+  activeTab.value = 'Machine Verification'
+  await nextTick()
+  await nextTick()
+  await machineVerificationRef.value?.refreshVersions()
 }
 
 async function completeCurrentVerification() {
@@ -819,19 +968,7 @@ async function completeCurrentVerification() {
       conflictCount = result.version.report.conflict_count ?? 0
     }
 
-    ElMessage.success(t('verification.completed', { version: versionLabel }))
-    if (conflictCount > 0) {
-      ElMessage.warning(t('verification.aiConflictsRecorded', { count: conflictCount }))
-    }
-    previewMode.value = 'browse'
-    verificationSession.value = null
-    verificationAiRun.value = null
-    verificationRecords.value = []
-    clearPreviewSelection()
-    activeTab.value = 'Machine Verification'
-    await nextTick()
-    await nextTick()
-    await machineVerificationRef.value?.refreshVersions()
+    await returnToVerificationResult(versionLabel, conflictCount)
   } catch (error: unknown) {
     ElMessage.error(error instanceof Error ? error.message : t('home.reviewUpdateFailed'))
   } finally {
@@ -844,62 +981,6 @@ async function handleMatchingVersionApplied(matchingVersionId: string) {
   if (!currentJobId.value) return
   extractionRecords.value = await getExtractionRecords(currentJobId.value)
   clearPreviewSelection()
-}
-
-async function reviewRelation(
-  relationId: string,
-  status: 'accepted' | 'rejected',
-) {
-  if (!currentJobId.value || relationSavingId.value) return
-  relationSavingId.value = relationId
-  try {
-    await updateRegionRelationReview(currentJobId.value, relationId, status)
-    const selectedRecord = previewCatalogRecords.value.find(
-      (record) => record.id === selectedRecordId.value,
-    )
-    if (selectedRecord && recordEvidenceContext.value) {
-      await selectCatalogRecord(selectedRecord)
-    } else if (previewSelectedPage.value !== null) {
-      await loadPageAnnotations(previewSelectedPage.value)
-    }
-    ElMessage.success(
-      status === 'accepted' ? t('home.relationAccepted') : t('home.relationRejected'),
-    )
-  } catch (error: unknown) {
-    ElMessage.error(error instanceof Error ? error.message : t('home.relationUpdateFailed'))
-  } finally {
-    relationSavingId.value = ''
-  }
-}
-
-async function rebindRelation(payload: {
-  relationId: string
-  sourceRegionId: string
-  targetRegionId: string
-  relationType: RegionRelation['relation_type']
-}) {
-  if (!currentJobId.value || relationSavingId.value) return
-  relationSavingId.value = payload.relationId
-  try {
-    await rebindRegionRelation(currentJobId.value, payload.relationId, {
-      source_region_id: payload.sourceRegionId,
-      target_region_id: payload.targetRegionId,
-      relation_type: payload.relationType,
-    })
-    const selectedRecord = previewCatalogRecords.value.find(
-      (record) => record.id === selectedRecordId.value,
-    )
-    if (selectedRecord && recordEvidenceContext.value) {
-      await selectCatalogRecord(selectedRecord)
-    } else if (previewSelectedPage.value !== null) {
-      await loadPageAnnotations(previewSelectedPage.value)
-    }
-    ElMessage.success(t('home.relationRebound'))
-  } catch (error: unknown) {
-    ElMessage.error(error instanceof Error ? error.message : t('home.relationUpdateFailed'))
-  } finally {
-    relationSavingId.value = ''
-  }
 }
 
 /** 页面进入左侧可视区域后生成低分辨率缩略图 */
@@ -959,15 +1040,23 @@ async function handlePdfSelected(event: Event) {
     ElMessage.warning(t('home.pdfOnly'))
     return
   }
+  if (file.size > MAX_PDF_UPLOAD_BYTES) {
+    ElMessage.warning(
+      t('home.fileTooLarge', { max: Math.floor(MAX_PDF_UPLOAD_BYTES / (1024 * 1024)) }),
+    )
+    return
+  }
 
   const documentVersion = ++pdfDocumentVersion
   globalThis.localStorage.setItem(lastExtractionJobStorageKey, 'disabled')
+  globalThis.localStorage.removeItem(lastExtractionDocumentStorageKey)
   ++previewRequestId
   renderingThumbnails.clear()
   renderingEvidencePages.clear()
   evidencePreviewOrder.splice(0)
   evidencePagePreviewUrls.value = {}
   uploadLoading.value = true
+  importProgress.value = createPdfImportProgress(file)
   previewLoading.value = false
   previewUrl.value = ''
   pdfPages.value = []
@@ -990,7 +1079,6 @@ async function handlePdfSelected(event: Event) {
   activeAnnotationId.value = ''
   selectedRecordId.value = ''
   reviewSavingId.value = ''
-  relationSavingId.value = ''
   progress.value = 0
   logs.value = []
   jobRunning.value = false
@@ -1002,14 +1090,28 @@ async function handlePdfSelected(event: Event) {
   stopJobPolling()
 
   try {
-    await pdfDocument.value?.destroy()
-    const [fileData, uploadedDocument] = await Promise.all([
-      file.arrayBuffer().then((buffer) => new Uint8Array(buffer)),
-      uploadPdfDocument(file),
+    await releasePdfDocument()
+    const [loadedDocument, uploadedDocument] = await Promise.all([
+      loadPdfDocument(file, (loaded, total) => {
+        patchImportProgress({
+          parsePercent: uploadPercentFromEvent(loaded, total, file.size),
+        })
+      }),
+      uploadPdfDocument(file, {
+        onUploadProgress: (loaded, total) => {
+          const percent = uploadPercentFromEvent(loaded, total, file.size)
+          patchImportProgress({
+            uploadPercent: percent,
+            stage: percent >= 100 ? 'saving' : 'uploading',
+          })
+        },
+      }).then((document) => {
+        patchImportProgress({ uploadPercent: 100, stage: 'parsing' })
+        return document
+      }),
     ])
-    const loadedDocument = await getDocument({ data: fileData }).promise
     if (documentVersion !== pdfDocumentVersion) {
-      await loadedDocument.destroy()
+      await loadedDocument.destroy().catch(() => undefined)
       return
     }
 
@@ -1022,11 +1124,15 @@ async function handlePdfSelected(event: Event) {
     }))
     selectedExtractionPages.value = getDefaultExtractionPages(pdfPages.value)
     activePage.value = 1
+    importProgress.value = null
+    uploadLoading.value = false
+    await nextTick()
+    void renderThumbnail(1)
     await renderSelectedPage(1)
     ElMessage.success(t('home.loaded', { name: file.name, count: pdfDocument.value.numPages }))
   } catch (error: unknown) {
     if (documentVersion === pdfDocumentVersion) {
-      pdfDocument.value = undefined
+      await releasePdfDocument()
       pdfFileName.value = ''
       selectedExtractionPages.value = []
       ElMessage.error(error instanceof Error ? error.message : t('home.loadFailed'))
@@ -1034,8 +1140,23 @@ async function handlePdfSelected(event: Event) {
   } finally {
     if (documentVersion === pdfDocumentVersion) {
       uploadLoading.value = false
+      importProgress.value = null
     }
   }
+}
+
+function isMissingJobError(error: unknown): boolean {
+  if (error instanceof ApiError) return error.code === 4040
+  return axios.isAxiosError(error) && error.response?.status === 404
+}
+
+function isActiveExtractionJob(job: ExtractionJob | null | undefined): job is ExtractionJob {
+  return Boolean(
+    job &&
+      !['completed', 'completed_with_warnings', 'failed', 'cancelled', 'cancelling'].includes(
+        job.status,
+      ),
+  )
 }
 
 // 离开页面时释放 PDF.js 占用的 Worker 和文档资源
@@ -1044,19 +1165,31 @@ async function restoreLatestExtractionResult() {
 
   try {
     const savedJobId = globalThis.localStorage.getItem(lastExtractionJobStorageKey)
+    const savedDocumentId =
+      globalThis.localStorage.getItem(lastExtractionDocumentStorageKey) ||
+      serverDocumentId.value ||
+      undefined
     if (savedJobId === 'disabled') return
     let job: ExtractionJob | null = null
-    if (savedJobId) {
+    // 进行中的任务优先于本地记住的旧完成结果，避免刷新后仍停在上一本报告。
+    const latestActive = await getLatestCompletedExtractionJob(undefined, {
+      includeActive: true,
+    })
+    if (isActiveExtractionJob(latestActive)) {
+      job = latestActive
+    } else if (savedJobId) {
       try {
         job = await getExtractionJob(savedJobId, { suppressErrorMessage: true })
-      } catch {
-        // 数据库重建或任务被清理后，本地保存的任务编号可能已经失效。
-        // 清理旧值并自动回退到最近一次完成的任务，避免刷新页面后停在 404。
-        globalThis.localStorage.removeItem(lastExtractionJobStorageKey)
-        job = await getLatestCompletedExtractionJob()
+      } catch (error: unknown) {
+        // 只有任务确实不存在时才丢掉本地编号。网络抖动或后端尚未就绪时保留，便于稍后续上进度。
+        if (isMissingJobError(error)) {
+          globalThis.localStorage.removeItem(lastExtractionJobStorageKey)
+          globalThis.localStorage.removeItem(lastExtractionDocumentStorageKey)
+        }
       }
-    } else {
-      job = await getLatestCompletedExtractionJob()
+    }
+    if (!job) {
+      job = latestActive ?? (await getLatestCompletedExtractionJob(savedDocumentId))
     }
     if (!job) return
 
@@ -1067,9 +1200,24 @@ async function restoreLatestExtractionResult() {
     ]
     selectedExtractionPages.value = [...extractionTaskPages.value]
     globalThis.localStorage.setItem(lastExtractionJobStorageKey, job.id)
+    if (job.document_id) {
+      globalThis.localStorage.setItem(lastExtractionDocumentStorageKey, job.document_id)
+    }
     applyJobState(job)
 
+    if (job.status === 'cancelled') {
+      await loadStoppedJobResult(job)
+      return
+    }
+
     if (job.status !== 'completed' && job.status !== 'completed_with_warnings') {
+      if (job.document_id) {
+        try {
+          await hydrateJobDocumentPages(job)
+        } catch {
+          // 续跑时缩略图失败不应挡住进度轮询。
+        }
+      }
       if (jobRunning.value) void pollExtractionJob(job.id)
       return
     }
@@ -1085,11 +1233,18 @@ async function restoreLatestExtractionResult() {
         recordsError instanceof Error ? recordsError.message : t('home.progressFailed'),
       )
     }
-    previewMode.value = 'browse'
-    previewSelectedPage.value = null
-    activeTab.value = 'Data Preview'
+    const keepVerification =
+      previewMode.value === 'verify' && Boolean(verificationSession.value)
+    if (!keepVerification) {
+      previewMode.value = 'browse'
+      previewSelectedPage.value = null
+      if (activeTab.value === 'Data Extraction') {
+        activeTab.value = 'Data Preview'
+      }
+    }
   } catch (error: unknown) {
     globalThis.localStorage.removeItem(lastExtractionJobStorageKey)
+    globalThis.localStorage.removeItem(lastExtractionDocumentStorageKey)
     ElMessage.warning(error instanceof Error ? error.message : t('home.progressFailed'))
   }
 }
@@ -1140,7 +1295,7 @@ onBeforeUnmount(() => {
   evidencePreviewOrder.splice(0)
   evidencePagePreviewUrls.value = {}
   stopJobPolling()
-  void pdfDocument.value?.destroy()
+  void releasePdfDocument()
 })
 </script>
 
@@ -1173,10 +1328,11 @@ onBeforeUnmount(() => {
           class="input-button"
           :icon="Upload"
           :loading="uploadLoading"
+          :disabled="uploadLoading"
           plain
           @click="openPdfPicker"
         >
-          {{ t('nav.inputPdf') }}
+          {{ uploadLoading ? t('nav.importingPdf') : t('nav.inputPdf') }}
         </el-button>
         <el-button
           v-else-if="activeTab === 'Data Preview' && previewMode === 'verify' && verificationSession"
@@ -1196,14 +1352,22 @@ onBeforeUnmount(() => {
             · {{ t('nav.verificationRemaining', { count: verificationRemaining }) }}
           </template>
         </el-button>
-        <el-button
+        <el-dropdown
           v-else-if="activeTab === 'Machine Verification'"
-          class="output-button"
-          plain
-          @click="exportVerificationResult"
+          trigger="click"
+          @command="exportVerificationResult"
         >
-          {{ t('nav.output') }}
-        </el-button>
+          <el-button class="output-button" plain>
+            <span class="output-button__label">{{ t('nav.output') }}</span>
+            <el-icon class="output-button__chevron" aria-hidden="true"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="snapshot">{{ t('nav.exportSnapshot') }}</el-dropdown-item>
+              <el-dropdown-item command="full-details">{{ t('nav.exportMachineDetails') }}</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
       <input
         ref="fileInputRef"
@@ -1223,6 +1387,7 @@ onBeforeUnmount(() => {
         :active-page="activePage"
         :total="pdfPages.length"
         :file-name="pdfFileName"
+        :import-progress="importProgress"
         @select="selectPdfPage"
         @thumbnail-needed="renderThumbnail"
       />
@@ -1254,6 +1419,9 @@ onBeforeUnmount(() => {
       <ExtractionSettings
         v-model:selected-pages="selectedExtractionPages"
         :pages="pdfPages"
+        :running="jobRunning"
+        :stopping="stopped && jobRunning"
+        :progress="progress"
         @extract="startExtraction"
         @thumbnail-needed="renderThumbnail"
       />
@@ -1299,10 +1467,7 @@ onBeforeUnmount(() => {
           :relations="previewRelations"
           :page-preview-urls="pagePreviewUrls"
           :active-annotation-id="activeAnnotationId"
-          :relation-saving="Boolean(relationSavingId)"
           @select-annotation="selectPreviewAnnotation"
-          @review-relation="reviewRelation"
-          @rebind-relation="rebindRelation"
         />
         <RelatedPages
           :pages="extractedPdfPages"
@@ -1316,7 +1481,7 @@ onBeforeUnmount(() => {
       </div>
 
       <ArchaeologicalCatalogs
-        :records="previewCatalogRecords"
+        :records="previewCatalogCardRecords"
         :pages="extractedPdfPages"
         :selected-page="previewSelectedPage"
         :selected-record-id="selectedRecordId"
@@ -1336,7 +1501,7 @@ onBeforeUnmount(() => {
     </main>
 
     <main
-      v-if="activeTab === 'Machine Verification'"
+      v-show="activeTab === 'Machine Verification'"
       class="machine-workspace-page"
     >
       <MachineVerificationWorkspace
@@ -1442,7 +1607,28 @@ onBeforeUnmount(() => {
   box-shadow: 0 2px 5px rgb(86 59 36 / 8%);
 }
 
-.output-button { width: 126px; }
+.output-button {
+  width: 126px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.output-button__label { line-height: 1; }
+
+.output-button__chevron {
+  width: 13px;
+  height: 13px;
+  margin-top: 1px;
+  color: #aa835f;
+  transition: color .16s ease, transform .16s ease;
+}
+
+.output-button:hover .output-button__chevron {
+  color: #8d5d36;
+  transform: translateY(1px);
+}
 
 .done-button {
   width: auto;
@@ -1474,6 +1660,12 @@ onBeforeUnmount(() => {
   height: calc(100vh - 113px);
   min-height: 0;
   padding: 0 19px 20px;
+  overflow: hidden;
+}
+
+.workspace__content > :first-child,
+.preview-workspace > :first-child {
+  min-height: 0;
   overflow: hidden;
 }
 

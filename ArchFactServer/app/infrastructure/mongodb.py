@@ -1,5 +1,6 @@
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient, IndexModel, MongoClient
 from pymongo.asynchronous.database import AsyncDatabase
+from pymongo.errors import OperationFailure
 from pymongo.synchronous.database import Database
 
 from app.core.config import Settings
@@ -25,9 +26,9 @@ class MongoDatabase:
 
     async def _create_indexes(self) -> None:
         await self._drop_legacy_document_image_index()
+        await self._ensure_unique_document_sha256_index()
         await self.database.documents.create_indexes(
             [
-                IndexModel([("sha256", ASCENDING)]),
                 IndexModel([("created_at", DESCENDING)]),
             ]
         )
@@ -89,12 +90,26 @@ class MongoDatabase:
                         ("updated_at", DESCENDING),
                     ]
                 ),
+                IndexModel(
+                    [("updated_at", ASCENDING)],
+                    expireAfterSeconds=90 * 24 * 60 * 60,
+                    name="semantic_cache_ttl_90d",
+                ),
+            ]
+        )
+        await self.database[f"{self._settings.gridfs_bucket}.files"].create_indexes(
+            [
+                IndexModel(
+                    [("metadata.sha256", ASCENDING)],
+                    name="gridfs_pdf_sha256",
+                )
             ]
         )
         await self.database.extraction_jobs.create_indexes(
             [
                 IndexModel([("document_id", ASCENDING), ("created_at", DESCENDING)]),
                 IndexModel([("status", ASCENDING), ("created_at", ASCENDING)]),
+                IndexModel([("status", ASCENDING), ("cancel_requested", ASCENDING)]),
                 IndexModel(
                     [("idempotency_key", ASCENDING)],
                     unique=True,
@@ -119,8 +134,15 @@ class MongoDatabase:
         )
         await self.database.extraction_records.create_indexes(
             [
-                IndexModel([("job_id", ASCENDING), ("source_pages", ASCENDING)]),
+                IndexModel(
+                    [
+                        ("job_id", ASCENDING),
+                        ("source_pages", ASCENDING),
+                        ("created_at", ASCENDING),
+                    ]
+                ),
                 IndexModel([("job_id", ASCENDING), ("entity_id", ASCENDING)]),
+                IndexModel([("job_id", ASCENDING), ("review_status", ASCENDING)]),
             ]
         )
         await self.database.artifact_entities.create_indexes(
@@ -137,12 +159,15 @@ class MongoDatabase:
         )
         await self.database.source_regions.create_indexes(
             [
-                IndexModel([("job_id", ASCENDING), ("page", ASCENDING)]),
+                IndexModel(
+                    [("job_id", ASCENDING), ("page", ASCENDING), ("created_at", ASCENDING)]
+                ),
                 IndexModel([("document_id", ASCENDING), ("page", ASCENDING)]),
             ]
         )
         await self.database.region_relations.create_indexes(
             [
+                IndexModel([("job_id", ASCENDING), ("created_at", ASCENDING)]),
                 IndexModel([("job_id", ASCENDING), ("source_region_id", ASCENDING)]),
                 IndexModel([("job_id", ASCENDING), ("target_region_id", ASCENDING)]),
             ]
@@ -167,7 +192,15 @@ class MongoDatabase:
         await self.database.job_events.create_indexes(
             [
                 IndexModel([("job_id", ASCENDING), ("created_at", ASCENDING)]),
+                IndexModel(
+                    [("created_at", ASCENDING)],
+                    expireAfterSeconds=60 * 24 * 60 * 60,
+                    name="job_events_ttl_60d",
+                ),
             ]
+        )
+        await self.database.extraction_templates.create_indexes(
+            [IndexModel([("position", ASCENDING)])]
         )
         await self.database.post_processing_rules.create_indexes(
             [IndexModel([("key", ASCENDING)], unique=True)]
@@ -183,27 +216,37 @@ class MongoDatabase:
                 IndexModel([("created_at", DESCENDING)]),
             ]
         )
-        await self.database.verification_cohorts.create_indexes(
-            [IndexModel([("job_id", ASCENDING)], unique=True)]
-        )
+        # A job may contain several independent assertion experiments (E1, E2, ...).
+        # Each experiment owns one fixed human-review cohort, rather than sharing one
+        # job-wide cohort left over from the pre-experiment design.
+        await self._ensure_verification_cohort_experiment_index()
         await self.database.verification_sessions.create_indexes(
             [
                 IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
                 IndexModel([("job_id", ASCENDING), ("status", ASCENDING)]),
             ]
         )
-        await self.database.verification_versions.create_indexes(
-            [
-                IndexModel(
-                    [("job_id", ASCENDING), ("version", ASCENDING)],
-                    unique=True,
-                )
-            ]
-        )
+        await self._ensure_unique_active_verification_session_index()
+        await self._ensure_verification_version_experiment_index()
         await self.database.ai_verification_runs.create_indexes(
             [
                 IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
                 IndexModel([("session_id", ASCENDING), ("status", ASCENDING)]),
+            ]
+        )
+        await self.database.machine_verification_runs.create_indexes(
+            [
+                IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
+                IndexModel([("job_id", ASCENDING), ("status", ASCENDING)]),
+            ]
+        )
+        await self.database.machine_verification_items.create_indexes(
+            [
+                IndexModel(
+                    [("run_id", ASCENDING), ("record_id", ASCENDING)],
+                    unique=True,
+                ),
+                IndexModel([("job_id", ASCENDING), ("verdict", ASCENDING)]),
             ]
         )
         await self.database.gold_datasets.create_indexes(
@@ -275,6 +318,79 @@ class MongoDatabase:
                     IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
                 ]
             )
+
+    async def _ensure_unique_document_sha256_index(self) -> None:
+        indexes = await self.database.documents.index_information()
+        for name, definition in indexes.items():
+            if name == "_id_":
+                continue
+            if definition.get("key") != [("sha256", 1)]:
+                continue
+            if definition.get("unique"):
+                return
+            await self.database.documents.drop_index(name)
+        try:
+            await self.database.documents.create_index(
+                [("sha256", ASCENDING)],
+                unique=True,
+                name="unique_document_sha256",
+            )
+        except OperationFailure:
+            await self.database.documents.create_index(
+                [("sha256", ASCENDING)],
+                name="sha256_1",
+            )
+
+    async def _ensure_unique_active_verification_session_index(self) -> None:
+        try:
+            await self.database.verification_sessions.create_index(
+                [("job_id", ASCENDING)],
+                unique=True,
+                name="unique_active_verification_session",
+                partialFilterExpression={
+                    "status": {"$in": ["in_progress", "ai_review", "conflict_review"]}
+                },
+            )
+        except OperationFailure:
+            return
+
+    async def _ensure_verification_cohort_experiment_index(self) -> None:
+        collection = self.database.verification_cohorts
+        legacy_key = [("job_id", 1)]
+        target_key = [("job_id", 1), ("experiment_id", 1)]
+        indexes = await collection.index_information()
+        for name, definition in indexes.items():
+            if name == "_id_" or not definition.get("unique"):
+                continue
+            key = definition.get("key")
+            if key == target_key:
+                return
+            if key == legacy_key:
+                await collection.drop_index(name)
+        await collection.create_index(
+            [("job_id", ASCENDING), ("experiment_id", ASCENDING)],
+            unique=True,
+            name="unique_verification_cohort_per_experiment",
+        )
+
+    async def _ensure_verification_version_experiment_index(self) -> None:
+        collection = self.database.verification_versions
+        legacy_key = [("job_id", 1), ("version", 1)]
+        target_key = [("job_id", 1), ("experiment_id", 1), ("version", 1)]
+        indexes = await collection.index_information()
+        for name, definition in indexes.items():
+            if name == "_id_" or not definition.get("unique"):
+                continue
+            key = definition.get("key")
+            if key == target_key:
+                return
+            if key == legacy_key:
+                await collection.drop_index(name)
+        await collection.create_index(
+            [("job_id", ASCENDING), ("experiment_id", ASCENDING), ("version", ASCENDING)],
+            unique=True,
+            name="unique_verification_version_per_experiment",
+        )
 
     async def _drop_legacy_document_image_index(self) -> None:
         indexes = await self.database.document_images.index_information()

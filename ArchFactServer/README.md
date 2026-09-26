@@ -160,8 +160,8 @@ PASS/FAIL，且复核结果不会反写生产抽取记录。
 
 ## 生产化边界
 
-- 当前 `LocalJobDispatcher` 是开发适配器，应用进程重启时未完成任务不会自动恢复。
-- 生产环境应新增实现相同边界的 Celery/Redis dispatcher，并在启动时恢复 `queued` 任务。
+- 抽取任务：进程重启后会尝试恢复未完成的 extraction job（OCR/语义检查点）。`LocalJobDispatcher` 仍是进程内队列，重匹配、核验、质量评估任务无法在重启后续跑，启动时会把这些过期活动标记为失败。
+- 生产环境若需要跨进程排队，应替换为 Celery/Redis 等同类 dispatcher，并同样在启动时恢复 `queued` 任务。
 - 没有文字层且 OCR 失败的扫描页会明确标记 `needs_ocr` 并产生任务警告，不会伪造结果。
 - OCR、YOLO 和语义抽取均保留独立模型运行记录、页面检查点与证据契约。
 - 单页失败不会终止其他页面；存在可用结果时任务以 `completed_with_warnings` 结束。

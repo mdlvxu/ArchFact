@@ -524,6 +524,53 @@ def test_preprocessor_reuses_matching_render_and_ocr_cache(tmp_path: Path) -> No
     assert second.pages[0]["ocr_cache_hit"] is True
 
 
+def test_preprocessor_reuses_ocr_when_only_runtime_knobs_change(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "text-layer-cache-runtime.pdf"
+    create_pdf(pdf_path)
+    repository = FakeRepository()
+    settings = Settings(
+        app_env="test",
+        file_storage_root=tmp_path / "files-cache-runtime",
+        ocr_policy="all",
+    )
+    ocr = FakeOcrEngine()
+    preprocessor = PagePreprocessor(
+        settings=settings,
+        parser=PdfParser(settings),
+        repository=repository,  # type: ignore[arg-type]
+        image_storage=LocalImageStorage(settings),
+        ocr_engine=ocr,
+    )
+
+    first = asyncio.run(
+        preprocessor.prepare(
+            pdf_path=pdf_path,
+            document_id="doc_test",
+            selected_pages=[1],
+        )
+    )
+    first.pages[0]["ocr_config_hash"] = "e00598804e263fbf"
+    asyncio.run(repository.upsert_pages("doc_test", first.pages))
+
+    later = PagePreprocessor(
+        settings=settings,
+        parser=PdfParser(settings),
+        repository=repository,  # type: ignore[arg-type]
+        image_storage=LocalImageStorage(settings),
+        ocr_engine=ocr,
+    )
+    second = asyncio.run(
+        later.prepare(
+            pdf_path=pdf_path,
+            document_id="doc_test",
+            selected_pages=[1],
+        )
+    )
+
+    assert ocr.calls == 1
+    assert second.pages[0]["ocr_cache_hit"] is True
+
+
 class FailingSecondPageEngine(LocalTextExtractionEngine):
     async def extract(self, chunk: Any, config: Any) -> list[dict[str, Any]]:
         if chunk.page_no == 2:
@@ -675,6 +722,67 @@ def test_retry_run_merges_recovered_page_with_successful_results(tmp_path: Path)
     assert retained_record_id in {record["id"] for record in repository.records}
     assert {page["page_no"] for page in repository.pages} == {1, 2}
     assert len(repository.text_chunks) == 2
+
+
+class CountingExtractionEngine(LocalTextExtractionEngine):
+    def __init__(self) -> None:
+        self.pages: list[int] = []
+
+    async def extract(self, chunk: Any, config: Any) -> list[dict[str, Any]]:
+        self.pages.append(int(chunk.page_no))
+        return await super().extract(chunk, config)
+
+
+def test_run_job_resumes_from_completed_page_runs(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "resume-pages.pdf"
+    document = fitz.open()
+    for text in ["M12:1 gray pottery", "M12:2 red pottery"]:
+        page = document.new_page()
+        page.insert_text((72, 72), text)
+    document.save(pdf_path)
+    document.close()
+    repository = FakeRepository()
+    repository.job["pages"] = [1, 2]
+    first_service = build_service(
+        tmp_path=tmp_path,
+        pdf_path=pdf_path,
+        repository=repository,
+    )
+    asyncio.run(first_service.run_job("job_test"))
+    page_one_record_id = next(
+        record["id"]
+        for record in repository.records
+        if record.get("source_pages") == [1]
+    )
+
+    repository.records = [
+        record for record in repository.records if record.get("source_pages") == [1]
+    ]
+    repository.regions = [
+        region for region in repository.regions if int(region.get("page", 0)) == 1
+    ]
+    repository.relations = [
+        relation
+        for relation in repository.relations
+        if str(relation.get("source_region_id", "")).endswith("_1_")
+        or str(relation.get("target_region_id", "")).endswith("_1_")
+    ]
+    repository.page_runs[2] = {**repository.page_runs[2], "status": "prepared"}
+    repository.job.update(status="extracting", stage="image_detection", error=None)
+
+    engine = CountingExtractionEngine()
+    resume_service = build_service(
+        tmp_path=tmp_path,
+        pdf_path=pdf_path,
+        repository=repository,
+        engine=engine,
+    )
+    asyncio.run(resume_service.run_job("job_test"))
+
+    assert engine.pages == [2]
+    assert repository.job["status"] == "completed"
+    assert {tuple(record["source_pages"]) for record in repository.records} == {(1,), (2,)}
+    assert page_one_record_id in {record["id"] for record in repository.records}
 
 
 class BlockingExtractionEngine(LocalTextExtractionEngine):
