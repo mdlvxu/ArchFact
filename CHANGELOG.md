@@ -2,6 +2,29 @@
 
 [English](./CHANGELOG.md) | [中文](./CHANGELOG中文.md)
 
+## quality-baseline-v7 — 2026-10-31
+
+Main changes since `quality-baseline-v6`.
+
+### GT Evaluation and Data Insights
+
+- Add a GT Evaluation workspace: import a human-annotation Excel baseline once per report and reuse it across extraction runs and matching versions
+- Match human rows to fused artifact cards by normalized ID; save item comparisons, results, and logs, with pause/resume/terminate controls and historical view/export
+- Export human-left-join details and text-to-artifact-image mappings; add Data Insights for artifact and page-level summaries
+
+### Extraction, matching, and interface
+
+- Improve PDF reuse, artifact-ID normalization, text-evidence and crop associations, and card/relation display in Data Preview
+- Expand the frontend to five navigable pages and refine localization, responsive layouts, and Machine Verification controls
+- Refresh both operator guides and workflow diagrams; exclude experimental mobile files, model weights, runtime data, and exports from the code baseline
+
+### Verification
+
+- Frontend: lint, type checking, and production build pass; 126 tests pass, 1 skipped
+- Backend: Ruff passes; 265 tests pass
+
+---
+
 ## quality-baseline-v6 — 2026-09-24
 
 Main changes since `quality-baseline-v5` (2026-09-20).
