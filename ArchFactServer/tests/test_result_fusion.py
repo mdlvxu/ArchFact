@@ -388,7 +388,10 @@ def test_fusion_upgrades_truncated_morphology_and_stops_at_mashed_next_id() -> N
             "id": "m1-37-l1",
             "page": 137,
             "kind": "text",
-            "text": "M1：37、玉梳背。南瓜黄闪玉，强风化，大部分受沁变白，局部尚存黄褐色原质。片状，",
+            "text": (
+                "M1：37、玉梳背。南瓜黄闪玉，强风化，"
+                "大部分受沁变白，局部尚存黄褐色原质。片状，"
+            ),
             "bbox": [0.1367, 0.1169, 0.9167, 0.1312],
             "source": "paddleocr",
         },
@@ -396,7 +399,10 @@ def test_fusion_upgrades_truncated_morphology_and_stops_at_mashed_next_id() -> N
             "id": "m1-37-l2",
             "page": 137,
             "kind": "text",
-            "text": "倒梯形、一面有线切割凹痕。顶端中央凹缺，缺口内作“弓”字形凸起，凸块下方有穿孔，",
+            "text": (
+                "倒梯形、一面有线切割凹痕。顶端中央凹缺，"
+                "缺口内作“弓”字形凸起，凸块下方有穿孔，"
+            ),
             "bbox": [0.12, 0.1374, 0.92, 0.152],
             "source": "paddleocr",
         },
@@ -404,7 +410,10 @@ def test_fusion_upgrades_truncated_morphology_and_stops_at_mashed_next_id() -> N
             "id": "m1-37-l3",
             "page": 137,
             "kind": "text",
-            "text": "双面钻。两侧边斜直，两下角弧切，底端有较宽的凸桦，上无穿孔。宽4.9、高3.7、厚0.4~0.6",
+            "text": (
+                "双面钻。两侧边斜直，两下角弧切，底端有较宽的凸桦，"
+                "上无穿孔。宽4.9、高3.7、厚0.4~0.6"
+            ),
             "bbox": [0.12, 0.1627, 0.92, 0.177],
             "source": "paddleocr",
         },

@@ -60,7 +60,9 @@ def test_full_machine_verification_excel_contains_summary_and_detail_rows() -> N
     )
 
     workbook = load_workbook(BytesIO(content), data_only=True)
-    assert workbook.sheetnames == ["校验汇总", "全量校验明细", "字段判断明细", "人工审核样本", "断言规则"]
+    assert workbook.sheetnames == [
+        "校验汇总", "全量校验明细", "字段判断明细", "人工审核样本", "断言规则"
+    ]
     assert workbook["全量校验明细"].max_row == 2
     assert workbook["全量校验明细"]["C2"].value == "M1:1"
     assert workbook["字段判断明细"].max_row == 2

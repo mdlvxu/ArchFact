@@ -133,12 +133,25 @@ watch(
     <div class="catalog-header">
       <div class="catalog-title">
         <h2>{{ t('catalog.title') }}</h2>
-        <p v-if="fileName" :title="fileName">{{ fileName }} · {{ t('common.page', { page }) }}</p>
+        <p
+          v-if="fileName"
+          :title="fileName"
+        >
+          {{ fileName }} · {{ t('common.page', { page }) }}
+        </p>
       </div>
       <div class="catalog-tools">
         <label class="search-box">
-          <svg class="tool-icon" viewBox="0 0 20 20" aria-hidden="true">
-            <circle cx="8.5" cy="8.5" r="5.5" />
+          <svg
+            class="tool-icon"
+            viewBox="0 0 20 20"
+            aria-hidden="true"
+          >
+            <circle
+              cx="8.5"
+              cy="8.5"
+              r="5.5"
+            />
             <path d="m13 13 4 4" />
           </svg>
           <input
@@ -149,10 +162,17 @@ watch(
           >
         </label>
         <label class="filter-box">
-          <svg class="tool-icon" viewBox="0 0 20 20" aria-hidden="true">
+          <svg
+            class="tool-icon"
+            viewBox="0 0 20 20"
+            aria-hidden="true"
+          >
             <path d="M3 5h14M6 10h8M8 15h4" />
           </svg>
-          <select v-model="categoryFilter" :aria-label="t('details.filter')">
+          <select
+            v-model="categoryFilter"
+            :aria-label="t('details.filter')"
+          >
             <option value="All">{{ t('details.all') }}</option>
             <option value="Pottery">{{ localize('Pottery') }}</option>
             <option value="Stone">{{ localize('Stone') }}</option>
@@ -162,7 +182,10 @@ watch(
       </div>
     </div>
 
-    <div v-if="selectedEntry" class="details-scroll">
+    <div
+      v-if="selectedEntry"
+      class="details-scroll"
+    >
       <section class="verification-card">
         <div class="verification-title">
           <h3>{{ t('catalog.verification') }}</h3>
@@ -201,7 +224,11 @@ watch(
           <div class="detail-grid__wide figure-caption">
             <dt>{{ localize('Figure Caption') }}</dt>
             <dd>
-              <svg viewBox="0 0 80 92" role="img" :aria-label="`${selectedEntry.code} 器物线图`">
+              <svg
+                viewBox="0 0 80 92"
+                role="img"
+                :aria-label="`${selectedEntry.code} 器物线图`"
+              >
                 <path :d="selectedEntry.glyph" />
               </svg>
               <span>
@@ -218,7 +245,10 @@ watch(
         <span>{{ page }}/{{ total }}</span>
       </div>
 
-      <div v-if="filteredEntries.length" class="catalog-list">
+      <div
+        v-if="filteredEntries.length"
+        class="catalog-list"
+      >
         <button
           v-for="entry in filteredEntries"
           :key="entry.artifactId"
@@ -227,7 +257,10 @@ watch(
           :class="{ 'catalog-item--active': entry.artifactId === selectedEntry.artifactId }"
           @click="selectedArtifactId = entry.artifactId"
         >
-          <svg viewBox="0 0 80 92" aria-hidden="true">
+          <svg
+            viewBox="0 0 80 92"
+            aria-hidden="true"
+          >
             <path :d="entry.glyph" />
           </svg>
           <span>
@@ -239,12 +272,18 @@ watch(
         </button>
       </div>
 
-      <div v-else class="catalog-empty catalog-empty--small">
+      <div
+        v-else
+        class="catalog-empty catalog-empty--small"
+      >
         {{ t('catalog.empty') }}
       </div>
     </div>
 
-    <div v-else class="catalog-empty">
+    <div
+      v-else
+      class="catalog-empty"
+    >
       <span>PDF</span>
       <h3>{{ t('details.emptyTitle') }}</h3>
       <p>{{ t('details.emptyHint') }}</p>

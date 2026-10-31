@@ -1,19 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import secrets
 from typing import Any
-from uuid import uuid4
 
-from pymongo import DESCENDING, ReplaceOne, ReturnDocument, UpdateOne
-from pymongo.errors import DuplicateKeyError
+from pymongo import ReplaceOne
 
-from app.core.errors import ConflictError, DomainError, NotFoundError
-from app.domain.page_semantics import PageSemantics
 from app.domain.relations import relation_key
-from app.domain.time import utc_now
-from app.domain.verification_sampling import select_balanced_verification_sample
 from app.infrastructure.mongodb import MongoDatabase
+
 
 class PersistenceOps:
     """Shared Mongo helpers used by every bounded-context mixin."""

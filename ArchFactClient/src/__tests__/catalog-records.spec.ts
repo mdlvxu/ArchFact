@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  attachEntityThumbnails,
   catalogCategoryText,
   catalogMorphologyText,
   catalogTextureText,
@@ -158,6 +159,43 @@ describe('groupCatalogRecordsByEntity', () => {
     expect(groupCatalogRecordsByEntity(records).map((item) => item.id)).toEqual([
       'text-m5-1',
     ])
+  })
+})
+
+describe('entity thumbnails on catalog representatives', () => {
+  it('keeps the richer text record while attaching the entity drawing crop', () => {
+    const drawing = {
+      ...record('drawing-m5-1', 74, 'entity-m5-1', {
+        artifact_id: field('BI(M5:1)', 74),
+      }),
+      thumbnail_region_id: null,
+      primary_artifact_region_id: 'drawing-crop-m5-1',
+    }
+    const text = record('text-m5-1', 39, 'entity-m5-1', {
+      artifact_id: field('M5:1', 39),
+      morphological_description: field('直口，卷沿，尖圆唇。', 39),
+    })
+    const [representative] = groupCatalogRecordsByEntity([drawing, text])
+    const [card] = attachEntityThumbnails(
+      [representative!],
+      [drawing, text],
+      {},
+    )
+
+    expect(card?.id).toBe('text-m5-1')
+    expect(card?.thumbnail_region_id).toBe('drawing-crop-m5-1')
+  })
+
+  it('uses the persisted entity thumbnail when page-level records have no crop anchor', () => {
+    const text = record('text-m1-1', 39, 'entity-m1-1', {
+      artifact_id: field('M1:1', 39),
+      morphological_description: field('直口，卷沿。', 39),
+    })
+    const [card] = attachEntityThumbnails([text], [text], {
+      'entity-m1-1': 'entity-thumbnail-m1-1',
+    })
+
+    expect(card?.thumbnail_region_id).toBe('entity-thumbnail-m1-1')
   })
 })
 

@@ -6,6 +6,7 @@ import {
   catalogMorphologyText,
   catalogTextureText,
 } from '@/domain/catalog-records'
+import { displayMatchingVersion } from '@/domain/matching-version'
 import { useI18n } from '@/i18n'
 import type { ExtractionRecord } from '@/types/extraction'
 import type { PdfPageItem } from '@/types/pdf'
@@ -535,7 +536,9 @@ function recordVerificationItem(record: ExtractionRecord) {
               class="verification-context"
               :class="{ 'verification-context--changed': recordVerificationItem(record)?.relation_changed }"
             >
-              <span>{{ t('catalog.matchingVersion') }} {{ matchingVersionId }}</span>
+              <span v-if="displayMatchingVersion(matchingVersionId)">
+                {{ t('catalog.matchingVersion') }} {{ displayMatchingVersion(matchingVersionId) }}
+              </span>
               <strong v-if="recordVerificationItem(record)?.relation_changed">
                 {{ t('catalog.relationChanged') }}
               </strong>
@@ -767,7 +770,9 @@ function recordVerificationItem(record: ExtractionRecord) {
             <strong>{{ item.record_id }}</strong>
             <small>{{ t('catalog.staleHint') }}</small>
           </div>
-          <b>{{ matchingVersionId }}</b>
+          <b v-if="displayMatchingVersion(matchingVersionId)">
+            {{ displayMatchingVersion(matchingVersionId) }}
+          </b>
         </article>
       </div>
 
@@ -790,6 +795,7 @@ function recordVerificationItem(record: ExtractionRecord) {
 }
 
 .catalogs {
+  container: catalogs / inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1261,7 +1267,7 @@ function recordVerificationItem(record: ExtractionRecord) {
 
 .verification-fields {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 5px 8px;
 }
 
@@ -1602,8 +1608,16 @@ function recordVerificationItem(record: ExtractionRecord) {
   border-radius: 7px;
 }
 
-@media (max-width: 1280px) {
-  .catalogs__header { grid-template-columns: 1fr 96px; }
+@container catalogs (max-width: 440px) {
+  .catalogs__header { grid-template-columns: minmax(0, 1fr) 108px; }
   .catalogs__header h2 { grid-column: 1 / -1; }
+
+  .failure-editor { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .failure-editor__actions { grid-column: 1 / -1; justify-self: end; }
+}
+
+@container catalogs (max-width: 340px) {
+  .verification-fields { grid-template-columns: minmax(0, 1fr); }
+  .verification-fields > .verification-field--completeness { grid-column: 1; }
 }
 </style>

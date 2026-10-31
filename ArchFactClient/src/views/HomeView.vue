@@ -2,10 +2,10 @@
 import { ArrowDown, Upload } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
-import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   cancelExtractionJob,
   completeVerificationSession,
@@ -15,6 +15,7 @@ import {
   getExtractionJob,
   getLatestCompletedExtractionJob,
   getAiVerificationRun,
+  getArtifactEntityThumbnails,
   getRegionCropContentUrl,
   getPageAnnotations,
   getExtractionRecords,
@@ -31,15 +32,14 @@ import { ApiError } from '@/api/http'
 import ArchaeologicalCatalogs from '@/components/business/ArchaeologicalCatalogs.vue'
 import ContentPreview from '@/components/business/ContentPreview.vue'
 import ExtractionSettings from '@/components/business/ExtractionSettings.vue'
-import LanguageToggle from '@/components/business/LanguageToggle.vue'
-import MachineVerificationWorkspace from '@/components/business/MachineVerificationWorkspace.vue'
 import PageNavigator from '@/components/business/PageNavigator.vue'
 import PdfOverview from '@/components/business/PdfOverview.vue'
 import ProcessingPanel, {
   type ProcessLog,
 } from '@/components/business/ProcessingPanel.vue'
 import RelatedPages from '@/components/business/RelatedPages.vue'
-import { groupCatalogRecordsByEntity } from '@/domain/catalog-records'
+import AppShell from '@/components/layout/AppShell.vue'
+import { attachEntityThumbnails, groupCatalogRecordsByEntity } from '@/domain/catalog-records'
 import {
   buildPreviewAnnotations,
   ensureSelectedPrimaryArtifactAnnotation,
@@ -71,20 +71,38 @@ import type {
   VerificationSession,
 } from '@/types/verification'
 
-// PDF.js 使用独立 Worker 解析文件，避免大文档阻塞页面交互
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+type PdfJsModule = typeof import('pdfjs-dist')
+let pdfJsModule: Promise<PdfJsModule> | null = null
+
+function loadPdfJsModule() {
+  if (!pdfJsModule) {
+    pdfJsModule = import('pdfjs-dist').then((module) => {
+      // PDF.js 使用独立 Worker 解析文件，避免大文档阻塞页面交互
+      module.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+      return module
+    })
+  }
+  return pdfJsModule
+}
 
 /** 页面顶部的业务步骤导航 */
-type WorkspaceTab = 'Data Extraction' | 'Data Preview' | 'Machine Verification'
+type WorkspaceTab = 'Data Extraction' | 'Data Preview' | 'Machine Verification' | 'Cross-report Evaluation' | 'Data Insights'
 type PreviewMode = 'browse' | 'verify'
 
-const tabs: WorkspaceTab[] = ['Data Extraction', 'Data Preview', 'Machine Verification']
-const tabLabels: Record<WorkspaceTab, string> = {
-  'Data Extraction': 'nav.extraction',
-  'Data Preview': 'nav.preview',
-  'Machine Verification': 'nav.verification',
+const tabPaths: Record<WorkspaceTab, string> = {
+  'Data Extraction': '/',
+  'Data Preview': '/preview',
+  'Machine Verification': '/machine-verification',
+  'Cross-report Evaluation': '/gt-evaluation',
+  'Data Insights': '/insights',
 }
+const routeTabs = Object.fromEntries(Object.entries(tabPaths).map(([tab, path]) => [path, tab])) as Record<string, WorkspaceTab>
+const MachineVerificationWorkspace = defineAsyncComponent(() => import('@/components/business/MachineVerificationWorkspace.vue'))
+const CrossReportEvaluationWorkspace = defineAsyncComponent(() => import('@/components/business/CrossReportEvaluationWorkspace.vue'))
+const DataInsightsWorkspace = defineAsyncComponent(() => import('@/components/business/DataInsightsWorkspace.vue'))
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
 const activeTab = ref<WorkspaceTab>('Data Extraction')
 const activePage = ref(1)
 const previewSelectedPage = ref<number | null>(null)
@@ -95,7 +113,19 @@ const reviewSavingId = ref('')
 const stopped = ref(false)
 const progress = ref(0)
 const fileInputRef = ref<HTMLInputElement>()
-const machineVerificationRef = ref<InstanceType<typeof MachineVerificationWorkspace>>()
+const machineVerificationRef = ref<{
+  exportFullMachineDetails: () => Promise<void>
+  exportResult: () => void
+  refreshVersions: () => Promise<void>
+} | null>(null)
+
+watch(() => route.path, (path) => {
+  activeTab.value = routeTabs[path] ?? 'Data Extraction'
+}, { immediate: true })
+watch(activeTab, (tab) => {
+  const path = tabPaths[tab]
+  if (route.path !== path) void router.push(path)
+})
 const pdfDocument = shallowRef<PDFDocumentProxy>()
 const pdfPages = ref<PdfPageItem[]>([])
 const selectedExtractionPages = ref<number[]>([])
@@ -114,6 +144,7 @@ const processedPages = ref(0)
 const totalProcessingPages = ref(0)
 const failedJobPages = ref(0)
 const extractionRecords = ref<ExtractionRecord[]>([])
+const entityThumbnails = ref<Record<string, string>>({})
 const activeMatchingVersionId = ref('M0')
 const previewMode = ref<PreviewMode>('browse')
 const verificationSession = ref<VerificationSession | null>(null)
@@ -134,6 +165,27 @@ let annotationRequestId = 0
 let evidenceContextRequestId = 0
 const lastExtractionJobStorageKey = 'archfact:last-extraction-job-id'
 const lastExtractionDocumentStorageKey = 'archfact:last-extraction-document-id'
+
+async function refreshEntityThumbnails(jobId: string) {
+  try {
+    const thumbnails = await getArtifactEntityThumbnails(jobId)
+    if (currentJobId.value !== jobId) return
+    entityThumbnails.value = thumbnails
+  } catch {
+    // Card text and PDF preview should remain usable when the optional entity
+    // thumbnail index is unavailable (for example, before the backend restarts).
+    if (currentJobId.value === jobId) entityThumbnails.value = {}
+  }
+}
+
+watch(
+  [currentJobId, jobRunning],
+  ([jobId, running]) => {
+    entityThumbnails.value = {}
+    if (jobId && !running) void refreshEntityThumbnails(jobId)
+  },
+  { immediate: true },
+)
 let pdfObjectUrl = ''
 
 const logs = ref<ProcessLog[]>([])
@@ -152,11 +204,15 @@ const pagePreviewUrls = computed<Record<number, string>>(() => ({
 }))
 
 const previewCatalogRecords = computed(() => {
-  const sourceRecords =
-    previewMode.value === 'verify' ? verificationRecords.value : extractionRecords.value
+  // Human review is scoped by the fixed session IDs, never the full extraction.
+  // Keep session order and distinct sample IDs even if they share an entity.
+  const sampleRecords = new Map(verificationRecords.value.map((record) => [record.id, record]))
+  const sampleIds = [...new Set(
+    (verificationSession.value?.items ?? []).filter((item) => !item.stale).map((item) => item.record_id),
+  )]
   const records = previewMode.value === 'verify'
-    ? sourceRecords
-    : groupCatalogRecordsByEntity(sourceRecords)
+    ? sampleIds.flatMap((id) => sampleRecords.has(id) ? [sampleRecords.get(id)!] : [])
+    : groupCatalogRecordsByEntity(extractionRecords.value)
   const completedRecord = recordEvidenceContext.value?.record
   if (!completedRecord) return records
   return records.map((record) => (
@@ -262,22 +318,47 @@ const evidenceContextAnnotations = computed<PreviewAnnotation[]>(() => {
  * detected artifact crop is linked anywhere in the document; page navigation
  * and selecting one card must never hide its siblings.
  */
-const previewCatalogCardRecords = computed(() => {
-  const sourceRecords =
-    previewMode.value === 'verify' ? verificationRecords.value : extractionRecords.value
+function cropBoundCatalogRecords(sourceRecords: ExtractionRecord[]) {
   const cropBoundEntityIds = new Set(
     sourceRecords
       .filter(hasArtifactCropBinding)
       .map((record) => record.entity_id)
       .filter((entityId): entityId is string => Boolean(entityId)),
   )
-
-  return previewCatalogRecords.value.filter(
+  return groupCatalogRecordsByEntity(sourceRecords).filter(
     (record) =>
       hasArtifactCropBinding(record) ||
       Boolean(record.entity_id && cropBoundEntityIds.has(record.entity_id)),
   )
+}
+
+const previewCatalogCardRecords = computed(() => {
+  // A fixed review sample must not disappear just because its crop is missing.
+  // Crop filtering belongs to normal browsing, not the human review cohort.
+  if (previewMode.value === 'verify') return previewCatalogRecords.value
+  const sourceRecords =
+    extractionRecords.value
+  const catalogRecords = attachEntityThumbnails(
+    previewCatalogRecords.value,
+    sourceRecords,
+    entityThumbnails.value,
+  )
+  const cropBoundEntityIds = new Set(
+    sourceRecords
+      .filter(hasArtifactCropBinding)
+      .map((record) => record.entity_id)
+      .filter((entityId): entityId is string => Boolean(entityId)),
+  )
+  return catalogRecords.filter(
+    (record) =>
+      hasArtifactCropBinding(record) ||
+      Boolean(record.entity_id && (
+        cropBoundEntityIds.has(record.entity_id) || entityThumbnails.value[record.entity_id]
+      )),
+  )
 })
+
+const insightsCatalogCardRecords = computed(() => cropBoundCatalogRecords(extractionRecords.value))
 
 const previewRegions = computed(
   () => recordEvidenceContext.value?.regions ?? pageAnnotationData.value?.regions ?? [],
@@ -319,6 +400,12 @@ watch(
 /** 切换业务步骤，暂未开发的页面给出明确反馈 */
 function changeTab(tab: WorkspaceTab) {
   activeTab.value = tab
+}
+
+function openInsightRecord(record: ExtractionRecord) {
+  previewMode.value = 'browse'
+  changeTab('Data Preview')
+  void selectCatalogRecord(record)
 }
 
 /** 调用第三页工作区导出当前机器校验结果。 */
@@ -417,7 +504,7 @@ async function loadStoppedJobResult(job: ExtractionJob): Promise<number> {
     pageAnnotationData.value = null
     recordEvidenceContext.value = null
     ++evidenceContextRequestId
-    activeTab.value = 'Data Preview'
+    changeTab('Data Preview')
   }
 
   return extractionRecords.value.length
@@ -459,7 +546,7 @@ async function pollExtractionJob(jobId: string) {
         pageAnnotationData.value = null
         recordEvidenceContext.value = null
         ++evidenceContextRequestId
-        activeTab.value = 'Data Preview'
+        changeTab('Data Preview')
       }
       if (job.status === 'completed_with_warnings') {
         ElMessage.warning(t('home.completedWithWarnings', {
@@ -519,7 +606,7 @@ async function retryFailedJobPages() {
     jobRunning.value = true
     stopped.value = false
     processingEndedAt.value = null
-    activeTab.value = 'Data Extraction'
+    changeTab('Data Extraction')
     ElMessage.success(t('home.retryStarted', { count: job.retry_pages?.length ?? 0 }))
     await pollExtractionJob(jobId)
   } catch (error: unknown) {
@@ -648,13 +735,14 @@ async function releasePdfDocument() {
   if (objectUrl) URL.revokeObjectURL(objectUrl)
 }
 
-function loadPdfDocument(
+async function loadPdfDocument(
   file: File,
   onProgress: (loaded: number, total: number) => void,
 ): Promise<PDFDocumentProxy> {
   const source = file.slice(0, file.size, file.type || 'application/pdf')
   const objectUrl = URL.createObjectURL(source)
   pdfObjectUrl = objectUrl
+  const { getDocument } = await loadPdfJsModule()
   const loadingTask = getDocument({ url: objectUrl })
   loadingTask.onProgress = (event) => {
     onProgress(event.loaded, event.total || file.size)
@@ -863,6 +951,7 @@ async function reviewRecord(
     previewMode.value !== 'verify' ||
     !currentJobId.value ||
     !verificationSession.value ||
+    !verificationSession.value.items.some((item) => item.record_id === record.id && !item.stale) ||
     reviewSavingId.value
   ) return
   reviewSavingId.value = record.id
@@ -892,16 +981,17 @@ async function startVerification(session: VerificationSession) {
   }
   if (!currentJobId.value) currentJobId.value = jobId
   verificationSession.value = session
+  verificationRecords.value = []
   verificationAiRun.value = null
   previewMode.value = 'verify'
   clearPreviewSelection()
-  activeTab.value = 'Data Preview'
+  changeTab('Data Preview')
   try {
     const records = await getVerificationSessionRecords(jobId, session.id)
     // 恢复任务的异步收尾不要把人工核验样本冲掉。
     if (verificationSession.value?.id !== session.id) return
     verificationRecords.value = records
-    const first = records[0]
+    const first = previewCatalogRecords.value[0]
     if (first) await selectCatalogRecord(first)
   } catch (error: unknown) {
     ElMessage.error(error instanceof Error ? error.message : t('verification.startFailed'))
@@ -918,7 +1008,7 @@ async function returnToVerificationResult(versionLabel: number, conflictCount: n
   verificationAiRun.value = null
   verificationRecords.value = []
   clearPreviewSelection()
-  activeTab.value = 'Machine Verification'
+  changeTab('Machine Verification')
   await nextTick()
   await nextTick()
   await machineVerificationRef.value?.refreshVersions()
@@ -980,6 +1070,7 @@ async function handleMatchingVersionApplied(matchingVersionId: string) {
   activeMatchingVersionId.value = matchingVersionId
   if (!currentJobId.value) return
   extractionRecords.value = await getExtractionRecords(currentJobId.value)
+  await refreshEntityThumbnails(currentJobId.value)
   clearPreviewSelection()
 }
 
@@ -1129,7 +1220,11 @@ async function handlePdfSelected(event: Event) {
     await nextTick()
     void renderThumbnail(1)
     await renderSelectedPage(1)
-    ElMessage.success(t('home.loaded', { name: file.name, count: pdfDocument.value.numPages }))
+    if (uploadedDocument.reused_existing) {
+      ElMessage.info(t('home.reusedPdf', { name: file.name }))
+    } else {
+      ElMessage.success(t('home.loaded', { name: file.name, count: pdfDocument.value.numPages }))
+    }
   } catch (error: unknown) {
     if (documentVersion === pdfDocumentVersion) {
       await releasePdfDocument()
@@ -1239,7 +1334,7 @@ async function restoreLatestExtractionResult() {
       previewMode.value = 'browse'
       previewSelectedPage.value = null
       if (activeTab.value === 'Data Extraction') {
-        activeTab.value = 'Data Preview'
+        changeTab('Data Preview')
       }
     }
   } catch (error: unknown) {
@@ -1301,74 +1396,68 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- 第一个工作台页面：复刻 Figma 中的数据抽取操作界面 -->
-  <div class="workspace">
-    <header class="app-header">
-      <h1>ArchFact</h1>
-    </header>
-
-    <nav
-      class="top-nav"
-      :aria-label="t('nav.workflow')"
-    >
-      <div class="top-nav__tabs">
-        <button
-          v-for="tab in tabs"
-          :key="tab"
-          type="button"
-          :class="{ 'top-nav__tab--active': activeTab === tab }"
-          @click="changeTab(tab)"
-        >
-          {{ t(tabLabels[tab]) }}
-        </button>
-      </div>
-      <div class="top-nav__actions">
-        <LanguageToggle />
+  <AppShell
+    :active-tab="activeTab"
+    @navigate="changeTab"
+  >
+    <template #actions>
+      <el-button
+        v-if="activeTab === 'Data Extraction'"
+        class="input-button"
+        :icon="Upload"
+        :loading="uploadLoading"
+        :disabled="uploadLoading"
+        plain
+        @click="openPdfPicker"
+      >
+        {{ uploadLoading ? t('nav.importingPdf') : t('nav.inputPdf') }}
+      </el-button>
+      <el-button
+        v-else-if="activeTab === 'Data Preview' && previewMode === 'verify' && verificationSession"
+        class="done-button"
+        plain
+        :loading="verificationCompleting"
+        :disabled="verificationRemaining > 0"
+        @click="completeCurrentVerification"
+      >
+        <template v-if="verificationCompleting && verificationAiRun">
+          {{ t('nav.aiReviewProgress', { percent: verificationAiRun.progress.percent }) }}
+        </template>
+        <template v-else>
+          {{ t('nav.completeVerification') }}
+        </template>
+        <template v-if="verificationRemaining > 0">
+          · {{ t('nav.verificationRemaining', { count: verificationRemaining }) }}
+        </template>
+      </el-button>
+      <el-dropdown
+        v-else-if="activeTab === 'Machine Verification'"
+        trigger="click"
+        @command="exportVerificationResult"
+      >
         <el-button
-          v-if="activeTab === 'Data Extraction'"
-          class="input-button"
-          :icon="Upload"
-          :loading="uploadLoading"
-          :disabled="uploadLoading"
+          class="output-button"
           plain
-          @click="openPdfPicker"
         >
-          {{ uploadLoading ? t('nav.importingPdf') : t('nav.inputPdf') }}
+          <span class="output-button__label">{{ t('nav.output') }}</span>
+          <el-icon
+            class="output-button__chevron"
+            aria-hidden="true"
+          >
+            <ArrowDown />
+          </el-icon>
         </el-button>
-        <el-button
-          v-else-if="activeTab === 'Data Preview' && previewMode === 'verify' && verificationSession"
-          class="done-button"
-          plain
-          :loading="verificationCompleting"
-          :disabled="verificationRemaining > 0"
-          @click="completeCurrentVerification"
-        >
-          <template v-if="verificationCompleting && verificationAiRun">
-            {{ t('nav.aiReviewProgress', { percent: verificationAiRun.progress.percent }) }}
-          </template>
-          <template v-else>
-            {{ t('nav.completeVerification') }}
-          </template>
-          <template v-if="verificationRemaining > 0">
-            · {{ t('nav.verificationRemaining', { count: verificationRemaining }) }}
-          </template>
-        </el-button>
-        <el-dropdown
-          v-else-if="activeTab === 'Machine Verification'"
-          trigger="click"
-          @command="exportVerificationResult"
-        >
-          <el-button class="output-button" plain>
-            <span class="output-button__label">{{ t('nav.output') }}</span>
-            <el-icon class="output-button__chevron" aria-hidden="true"><ArrowDown /></el-icon>
-          </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="snapshot">{{ t('nav.exportSnapshot') }}</el-dropdown-item>
-              <el-dropdown-item command="full-details">{{ t('nav.exportMachineDetails') }}</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-      </div>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="snapshot">
+              {{ t('nav.exportSnapshot') }}
+            </el-dropdown-item>
+            <el-dropdown-item command="full-details">
+              {{ t('nav.exportMachineDetails') }}
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <input
         ref="fileInputRef"
         class="pdf-input"
@@ -1376,7 +1465,7 @@ onBeforeUnmount(() => {
         accept=".pdf,application/pdf"
         @change="handlePdfSelected"
       >
-    </nav>
+    </template>
 
     <main
       v-show="activeTab === 'Data Extraction'"
@@ -1504,92 +1593,55 @@ onBeforeUnmount(() => {
       v-show="activeTab === 'Machine Verification'"
       class="machine-workspace-page"
     >
-      <MachineVerificationWorkspace
-        ref="machineVerificationRef"
-        :job-id="currentJobId"
-        :document-id="serverDocumentId"
-        :active-matching-version-id="activeMatchingVersionId"
-        @start-verification="startVerification"
-        @matching-version-applied="handleMatchingVersionApplied"
-      />
+      <KeepAlive>
+        <MachineVerificationWorkspace
+          v-if="activeTab === 'Machine Verification'"
+          ref="machineVerificationRef"
+          :job-id="currentJobId"
+          :document-id="serverDocumentId"
+          :active-matching-version-id="activeMatchingVersionId"
+          @start-verification="startVerification"
+          @matching-version-applied="handleMatchingVersionApplied"
+        />
+      </KeepAlive>
     </main>
-  </div>
+
+    <main
+      v-show="activeTab === 'Cross-report Evaluation'"
+      class="insights-workspace-page"
+    >
+      <KeepAlive>
+        <CrossReportEvaluationWorkspace
+          v-if="activeTab === 'Cross-report Evaluation'"
+          :active="activeTab === 'Cross-report Evaluation'"
+          :job-id="currentJobId"
+          :document-id="serverDocumentId"
+          :document-name="pdfFileName"
+        />
+      </KeepAlive>
+    </main>
+
+    <main
+      v-show="activeTab === 'Data Insights'"
+      class="insights-workspace-page"
+    >
+      <KeepAlive>
+        <DataInsightsWorkspace
+          v-if="activeTab === 'Data Insights'"
+          :active="activeTab === 'Data Insights'"
+          :job-id="currentJobId"
+          :records="insightsCatalogCardRecords"
+          :raw-record-count="extractionRecords.length"
+          :requested-pages="extractionTaskPages"
+          :document-name="pdfFileName"
+          @open-record="openInsightRecord"
+        />
+      </KeepAlive>
+    </main>
+  </AppShell>
 </template>
 
 <style scoped lang="scss">
-.workspace {
-  --af-heading: #37322e;
-  --af-muted: #928b83;
-  --af-border: #e0d8cf;
-  --af-shadow: 0 2px 7px rgb(74 54 36 / 14%);
-
-  min-width: 320px;
-  height: 100vh;
-  min-height: 100vh;
-  overflow: hidden;
-  font-size: var(--af-font-body);
-  color: var(--af-heading);
-  background:
-    radial-gradient(circle at 50% 15%, rgb(255 255 255 / 78%), transparent 38%),
-    #f8f1ea;
-}
-
-.app-header {
-  display: grid;
-  place-items: center;
-  height: 47px;
-  background: rgb(255 255 255 / 85%);
-  border-bottom: 1px solid #eee8e2;
-}
-
-.app-header h1 {
-  font-size: var(--af-font-page-title);
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-.top-nav {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 55px;
-  padding: 0 19px;
-}
-
-.top-nav__tabs {
-  display: flex;
-  gap: 27px;
-  align-items: center;
-}
-
-.top-nav__actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
-  align-items: center;
-  min-width: max-content;
-  min-height: 32px;
-}
-
-.top-nav__tabs button {
-  min-width: 108px;
-  height: 31px;
-  padding: 0 14px;
-  font-size: var(--af-font-body);
-  color: #4f4a45;
-  cursor: pointer;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-}
-
-.top-nav__tabs button:hover,
-.top-nav__tab--active {
-  background: rgb(255 255 255 / 72%) !important;
-  border-color: #e5ded6 !important;
-  box-shadow: 0 1px 4px rgb(70 51 36 / 8%);
-}
-
 .input-button {
   width: 126px;
   font-size: var(--af-font-body);
@@ -1656,11 +1708,12 @@ onBeforeUnmount(() => {
 .workspace__content {
   display: grid;
   grid-template-columns: 150px minmax(420px, 1fr) minmax(335px, 360px);
+  grid-template-rows: minmax(600px, 1fr);
   gap: 12px;
-  height: calc(100vh - 113px);
+  flex: 1;
   min-height: 0;
   padding: 0 19px 20px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .workspace__content > :first-child,
@@ -1681,11 +1734,12 @@ onBeforeUnmount(() => {
 .preview-workspace {
   display: grid;
   grid-template-columns: 150px 92px minmax(480px, 1fr) minmax(350px, 420px);
+  grid-template-rows: minmax(560px, 1fr);
   gap: 12px;
-  height: calc(100vh - 113px);
+  flex: 1;
   min-height: 0;
   padding: 0 19px 20px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .preview-workspace--selected {
@@ -1702,17 +1756,22 @@ onBeforeUnmount(() => {
 }
 
 .machine-workspace-page {
-  height: calc(100vh - 113px);
+  flex: 1;
   min-height: 0;
   padding: 0 19px 20px;
   overflow: hidden;
+}
+
+.insights-workspace-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 @media (max-width: 1180px) {
   .preview-workspace {
     grid-template-columns: 130px 82px minmax(420px, 1fr);
     grid-template-rows: minmax(620px, 1fr) 680px;
-    height: calc(100vh - 113px);
     overflow: auto;
   }
 
@@ -1725,10 +1784,21 @@ onBeforeUnmount(() => {
   }
 }
 
+@media (max-width: 1440px) {
+  .workspace__center {
+    grid-template-rows: 330px minmax(350px, 1fr);
+  }
+
+  .workspace__content {
+    grid-template-rows: minmax(692px, 1fr);
+    overflow-y: auto;
+  }
+}
+
 @media (max-width: 980px) {
   .workspace__content {
     grid-template-columns: 112px minmax(0, 1fr);
-    height: calc(100vh - 113px);
+    grid-template-rows: minmax(760px, 1fr) max-content;
     overflow: auto;
   }
 
@@ -1742,24 +1812,9 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 700px) {
-  .top-nav {
-    align-items: flex-start;
-    height: auto;
-    padding-block: 10px;
-  }
-
-  .top-nav__tabs {
-    flex-wrap: wrap;
-    gap: 5px;
-  }
-
-  .top-nav__tabs button {
-    min-width: auto;
-  }
-
   .workspace__content {
-    grid-template-columns: 1fr;
-    height: calc(100vh - 120px);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 240px 892px max-content;
     padding: 0 10px 14px;
     overflow: auto;
   }
@@ -1769,18 +1824,25 @@ onBeforeUnmount(() => {
   }
 
   .workspace__center {
-    grid-template-rows: minmax(220px, auto) minmax(420px, auto);
+    grid-template-rows: 400px 480px;
     overflow: visible;
   }
 
-  .top-nav__actions {
-    flex: 0 0 auto;
+  .done-button {
+    min-width: 0;
+    max-width: 100%;
+    height: auto;
+    min-height: 32px;
+  }
+
+  .done-button :deep(span) {
+    flex-wrap: wrap;
+    white-space: normal;
   }
 
   .preview-workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 620px minmax(620px, auto);
-    height: calc(100vh - 120px);
     padding: 0 10px 14px;
     overflow: auto;
   }
@@ -1791,7 +1853,7 @@ onBeforeUnmount(() => {
   }
 
   .preview-workspace--selected {
-    grid-template-columns: 90px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .preview-workspace__center {
@@ -1803,7 +1865,6 @@ onBeforeUnmount(() => {
   }
 
   .machine-workspace-page {
-    height: calc(100vh - 120px);
     padding: 0 10px 14px;
   }
 }

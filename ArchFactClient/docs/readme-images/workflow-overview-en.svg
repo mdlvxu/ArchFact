@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="760" viewBox="0 0 1600 760" role="img" aria-labelledby="title desc">
+  <title id="title">ArchFact workflow overview</title>
+  <desc id="desc">Import a PDF, extract text and images, link evidence, fuse records, and preview cards. Machine Verification, GT Evaluation, and Data Insights then use the fused results independently.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1"><stop stop-color="#fffaf5"/><stop offset="1" stop-color="#f3e9df"/></linearGradient>
+    <linearGradient id="copper" x2="1" y2="1"><stop stop-color="#cb7a37"/><stop offset="1" stop-color="#93400d"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#775a43" flood-opacity=".13"/></filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#a96839"/></marker>
+    <style>
+      text{font-family:"Segoe UI",Arial,sans-serif;fill:#292f32}
+      .title{font-size:34px;font-weight:700}.subtitle{font-size:17px;fill:#77685c}
+      .step{font-size:21px;font-weight:700}.detail{font-size:15px;fill:#72665d}
+      .number{font-size:17px;font-weight:700;fill:#fff}.branch-title{font-size:23px;font-weight:700}
+      .branch-detail{font-size:16px;fill:#665d55}.channel{font-size:15px;font-weight:600}
+      .card{fill:#fff;stroke:#ead9ca;stroke-width:1.5;filter:url(#shadow)}
+      .connector{fill:none;stroke:#a96839;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+      .icon-blue{fill:none;stroke:#406b89;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+      .icon-copper{fill:none;stroke:#a96839;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+      .icon-green{fill:none;stroke:#3b8567;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+  <rect width="1600" height="760" fill="url(#background)"/>
+  <circle cx="1575" cy="-45" r="155" fill="#eddbc9" opacity=".5"/>
+  <circle cx="25" cy="780" r="150" fill="#f0dcc8" opacity=".5"/>
+  <text x="60" y="62" class="title">From archaeological PDFs to traceable artifact data</text>
+  <text x="60" y="93" class="subtitle">One extraction builds fused cards; verification, Ground Truth evaluation, and insights use them independently.</text>
+
+  <rect class="card" x="50" y="142" width="240" height="275" rx="22"/>
+  <rect class="card" x="365" y="142" width="240" height="275" rx="22"/>
+  <rect class="card" x="680" y="142" width="240" height="275" rx="22"/>
+  <rect class="card" x="995" y="142" width="240" height="275" rx="22"/>
+  <rect class="card" x="1310" y="142" width="240" height="275" rx="22"/>
+  <path class="connector" d="M294 280H353" marker-end="url(#arrow)"/>
+  <path class="connector" d="M609 280H668" marker-end="url(#arrow)"/>
+  <path class="connector" d="M924 280H983" marker-end="url(#arrow)"/>
+  <path class="connector" d="M1239 280H1298" marker-end="url(#arrow)"/>
+
+  <circle cx="85" cy="178" r="23" fill="url(#copper)"/><text x="85" y="184" text-anchor="middle" class="number">01</text>
+  <path class="icon-copper" d="M122 235h67l19 19v64h-86z M189 235v20h19 M137 272h53 M137 287h43 M137 302h32"/>
+  <text x="170" y="354" text-anchor="middle" class="step">Import PDF</text>
+  <text x="170" y="384" text-anchor="middle" class="detail">Choose report and template</text>
+  <text x="170" y="405" text-anchor="middle" class="detail">Set page range</text>
+
+  <circle cx="400" cy="178" r="23" fill="url(#copper)"/><text x="400" y="184" text-anchor="middle" class="number">02</text>
+  <rect x="391" y="220" width="188" height="44" rx="10" fill="#ebf4fa" stroke="#8cb3cf"/>
+  <text x="485" y="249" text-anchor="middle" class="channel" fill="#245a7c">Text / OCR → LLM</text>
+  <rect x="391" y="274" width="188" height="44" rx="10" fill="#fff2e7" stroke="#e0aa78"/>
+  <text x="485" y="303" text-anchor="middle" class="channel" fill="#a4561b">PDF image → YOLO</text>
+  <text x="485" y="354" text-anchor="middle" class="step">Dual-track extraction</text>
+  <text x="485" y="384" text-anchor="middle" class="detail">Text fields and artifact crops</text>
+
+  <circle cx="715" cy="178" r="23" fill="url(#copper)"/><text x="715" y="184" text-anchor="middle" class="number">03</text>
+  <path class="icon-blue" d="M775 232 844 272 775 313 M844 272 872 232 M844 272 872 313"/>
+  <circle cx="775" cy="232" r="12" fill="#eff7f1" stroke="#4b9671" stroke-width="3"/>
+  <circle cx="775" cy="313" r="12" fill="#eff7f1" stroke="#4b9671" stroke-width="3"/>
+  <circle cx="844" cy="272" r="12" fill="#fff3e7" stroke="#c47b31" stroke-width="3"/>
+  <circle cx="872" cy="232" r="12" fill="#eff5fb" stroke="#5b8daf" stroke-width="3"/>
+  <circle cx="872" cy="313" r="12" fill="#eff5fb" stroke="#5b8daf" stroke-width="3"/>
+  <text x="800" y="354" text-anchor="middle" class="step">Relation matching</text>
+  <text x="800" y="384" text-anchor="middle" class="detail">IDs, source text, drawings</text>
+  <text x="800" y="405" text-anchor="middle" class="detail">crops and color plates</text>
+
+  <circle cx="1030" cy="178" r="23" fill="url(#copper)"/><text x="1030" y="184" text-anchor="middle" class="number">04</text>
+  <ellipse class="icon-green" cx="1115" cy="236" rx="58" ry="19"/>
+  <path class="icon-green" d="M1057 236v69c0 12 26 19 58 19s58-7 58-19v-69 M1057 270c0 12 26 19 58 19s58-7 58-19"/>
+  <text x="1115" y="354" text-anchor="middle" class="step">Fuse and store</text>
+  <text x="1115" y="384" text-anchor="middle" class="detail">Entities, evidence, relations</text>
+  <text x="1115" y="405" text-anchor="middle" class="detail">saved per extraction run</text>
+
+  <circle cx="1345" cy="178" r="23" fill="url(#copper)"/><text x="1345" y="184" text-anchor="middle" class="number">05</text>
+  <path class="icon-blue" d="M1384 228h92v91h-92z M1401 249h58 M1401 269h45 M1401 289h53"/>
+  <circle cx="1465" cy="307" r="16" fill="#f8efe7" stroke="#bb6b34" stroke-width="2"/>
+  <path class="icon-copper" d="m1458 307 5 5 9-11"/>
+  <text x="1430" y="354" text-anchor="middle" class="step">Data Preview</text>
+  <text x="1430" y="384" text-anchor="middle" class="detail">Cards and source evidence</text>
+  <text x="1430" y="405" text-anchor="middle" class="detail">matching versions</text>
+
+  <path class="connector" d="M1430 421v47H295 M1430 468H1305"/>
+  <path class="connector" d="M295 468v37" marker-end="url(#arrow)"/>
+  <path class="connector" d="M800 468v37" marker-end="url(#arrow)"/>
+  <path class="connector" d="M1305 468v37" marker-end="url(#arrow)"/>
+
+  <rect class="card" x="60" y="518" width="470" height="180" rx="20"/>
+  <rect class="card" x="565" y="518" width="470" height="180" rx="20"/>
+  <rect class="card" x="1070" y="518" width="470" height="180" rx="20"/>
+  <circle cx="101" cy="558" r="22" fill="url(#copper)"/><text x="101" y="564" text-anchor="middle" class="number">06</text>
+  <text x="139" y="566" class="branch-title">Machine Verification</text>
+  <text x="88" y="606" class="branch-detail">LLM Assertions V1 / V2 + selected rules on all eligible cards</text>
+  <text x="88" y="633" class="branch-detail">Fixed 18-item human sample; machine–human alignment</text>
+  <rect x="88" y="651" width="205" height="28" rx="14" fill="#fff0e4"/>
+  <text x="190" y="670" text-anchor="middle" font-size="14" fill="#975018">Versions · JSON / Excel</text>
+
+  <circle cx="606" cy="558" r="22" fill="url(#copper)"/><text x="606" y="564" text-anchor="middle" class="number">07</text>
+  <text x="644" y="566" class="branch-title">GT Evaluation</text>
+  <text x="593" y="606" class="branch-detail">Import human-annotation Excel once per report</text>
+  <text x="593" y="633" class="branch-detail">Match artifact IDs, compare fields across extraction runs</text>
+  <rect x="593" y="651" width="208" height="28" rx="14" fill="#eaf5ef"/>
+  <text x="697" y="670" text-anchor="middle" font-size="14" fill="#367654">Logs · left-join report</text>
+
+  <circle cx="1111" cy="558" r="22" fill="url(#copper)"/><text x="1111" y="564" text-anchor="middle" class="number">08</text>
+  <text x="1149" y="566" class="branch-title">Data Insights</text>
+  <text x="1098" y="606" class="branch-detail">Explore artifacts, categories, and page distribution</text>
+  <text x="1098" y="633" class="branch-detail">For navigation; not a substitute for evaluation</text>
+  <rect x="1098" y="651" width="168" height="28" rx="14" fill="#eaf2f8"/>
+  <text x="1182" y="670" text-anchor="middle" font-size="14" fill="#356684">Run-level overview</text>
+</svg>

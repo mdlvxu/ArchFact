@@ -77,6 +77,34 @@ const annotationData: PageAnnotations = {
 }
 
 describe('buildPreviewAnnotations', () => {
+  it('keeps detected line drawings and color plates on pages without records', () => {
+    const data: PageAnnotations = {
+      ...annotationData,
+      records: [],
+      regions: [
+        { ...annotationData.regions[0]!, id: 'line-1', kind: 'line_drawing' },
+        { ...annotationData.regions[0]!, id: 'plate-1', kind: 'color_plate' },
+      ],
+      relations: [
+        {
+          ...annotationData.relations[0]!,
+          id: 'line-to-plate',
+          source_region_id: 'line-1',
+          target_region_id: 'plate-1',
+          relation_type: 'color_plate_of',
+        },
+      ],
+    }
+
+    const annotations = buildPreviewAnnotations([], data, 7)
+
+    expect(annotations.map((annotation) => annotation.kind)).toEqual([
+      'line_drawing',
+      'color_plate',
+    ])
+    expect(annotations.every((annotation) => annotation.relationIds.includes('line-to-plate'))).toBe(true)
+  })
+
   it('uses backend region geometry, kind and relations', () => {
     const annotations = buildPreviewAnnotations([record], annotationData, 7)
     expect(annotations).toHaveLength(1)

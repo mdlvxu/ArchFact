@@ -59,6 +59,7 @@ def test_upload_reuses_existing_document_by_sha256() -> None:
     document = asyncio.run(service.upload(_UploadFile()))  # type: ignore[arg-type]
 
     assert document["_id"] == "doc_existing"
+    assert document["_reused_existing"] is True
     assert storage.digest_calls == 1
     assert storage.store_calls == 0
 
@@ -98,6 +99,7 @@ def test_upload_deletes_orphan_gridfs_file_on_duplicate_sha256() -> None:
     document = asyncio.run(service.upload(_UploadFile()))  # type: ignore[arg-type]
 
     assert document["_id"] == "doc_winner"
+    assert document["_reused_existing"] is True
     assert storage.deleted == ["gridfs_new"]
 
 
@@ -124,6 +126,36 @@ def test_create_document_returns_existing_row_on_duplicate_sha256() -> None:
     )
 
     assert document["_id"] == "doc_existing"
+    assert document["_reused_existing"] is True
+
+
+def test_list_documents_returns_one_most_recent_document_per_sha256() -> None:
+    documents = [
+        {"_id": "doc_new", "sha256": "same", "filename": "report.pdf"},
+        {"_id": "doc_other", "sha256": "different", "filename": "other.pdf"},
+        {"_id": "doc_old", "sha256": "same", "filename": "report-copy.pdf"},
+    ]
+
+    class Cursor:
+        def sort(self, field: str, direction: int):
+            assert field == "created_at"
+            assert direction == -1
+            return self
+
+        async def to_list(self, length: int):
+            return documents[:length]
+
+    class Documents:
+        def find(self, query):  # noqa: ANN001
+            assert query == {}
+            return Cursor()
+
+    repository = MongoRepository.__new__(MongoRepository)
+    repository._db = SimpleNamespace(documents=Documents())  # type: ignore[attr-defined]
+
+    listed = asyncio.run(repository.list_documents())
+
+    assert [document["_id"] for document in listed] == ["doc_new", "doc_other"]
 
 
 def test_replace_document_page_index_upserts_before_deleting_stale_rows() -> None:
@@ -202,6 +234,49 @@ def test_replace_quality_evaluation_items_uses_stable_ids() -> None:
     assert collection.delete_query == {
         "evaluation_id": "eval_1",
         "_id": {"$nin": ["qualityitem_eval_1_rec_9"]},
+    }
+
+
+def test_human_left_items_get_distinct_ids_without_machine_record() -> None:
+    collection = _Collection()
+    repository = MongoRepository.__new__(MongoRepository)
+    repository._db = SimpleNamespace(quality_evaluation_items=collection)  # type: ignore[attr-defined]
+    asyncio.run(repository.replace_quality_evaluation_items(
+        run_id="eval_2", job_id="job_1", items=[
+            {"record_id": "", "gold_record_id": "gold_1", "match_status": "not_found"},
+            {"record_id": "", "gold_record_id": "gold_2", "match_status": "not_found"},
+        ],
+    ))
+    assert [operation._filter["_id"] for operation in collection.bulk_ops] == [
+        "qualityitem_eval_2_gold_1", "qualityitem_eval_2_gold_2",
+    ]
+
+
+def test_quality_item_index_migrates_from_machine_to_human_unique_key() -> None:
+    class Collection:
+        def __init__(self) -> None:
+            self.dropped = []
+            self.created = []
+
+        async def index_information(self):
+            return {"evaluation_id_1_record_id_1": {
+                "key": [("evaluation_id", 1), ("record_id", 1)], "unique": True,
+            }}
+
+        async def drop_index(self, name):
+            self.dropped.append(name)
+
+        async def create_index(self, keys, **kwargs):
+            self.created.append((keys, kwargs))
+
+    collection = Collection()
+    mongo = MongoDatabase.__new__(MongoDatabase)
+    mongo.database = SimpleNamespace(quality_evaluation_items=collection)  # type: ignore[attr-defined]
+    asyncio.run(mongo._ensure_quality_item_gold_index())
+    assert collection.dropped == ["evaluation_id_1_record_id_1"]
+    assert collection.created[0][1]["unique"] is True
+    assert collection.created[0][1]["partialFilterExpression"] == {
+        "gold_record_id": {"$type": "string"},
     }
 
 

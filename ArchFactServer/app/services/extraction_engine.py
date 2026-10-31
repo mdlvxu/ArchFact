@@ -2014,7 +2014,15 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
     def _system_prompt(config: ExtractionConfig | None = None) -> str:
         configured_prompt = (config.system_prompt or "").strip() if config else ""
         if configured_prompt:
-            return configured_prompt
+            return (
+                f"{configured_prompt}\n\n"
+                "形态描述字段完整性约束：颜色、质地、完整程度、类别、器形等信息即使另填入专门字段，"
+                "仍必须保留在当前器物的完整形态描述中，不得只输出字段拆分后的残余内容；"
+                "只排除页眉、其他器物编号及不属于该器物的无关叙述。"
+                "表面颜色拆分约束：如原文出现‘灰色泥岩’、‘浅灰色粉砂质泥岩’这类明确颜色词"
+                "直接修饰岩性名词的写法，surface_color 只填写颜色词，texture 保留岩性词；"
+                "完整原句仍保留在 morphological_description 中，不得由黑白线图推断颜色。"
+            )
         return (
             "Return compact JSON to minimize latency. Every records item contains record_type "
             "and fields. Put dynamic schema keys only inside fields and omit null fields. "
@@ -2034,7 +2042,8 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             "不得虚构页码、器物编号、图号、图中序号、图版号或事实。"
             "器物编号（如 T3:3）、图号（如 图6）和图中序号（如 3）必须分开。"
             "Typology label BI(M5:1): use M5:1 as identity; BI is B型I式 context, never an ID."
-            "只有 OCR 原文明确出现完整‘遗迹号:序号’（如 M14:1）的条目，才能输出 record_type=artifact。"
+            "只有 OCR 原文明确出现完整‘遗迹号:序号’（如 M14:1）的条目，"
+            "才能输出 record_type=artifact。"
             "仅有 M14、T0402、H125 等遗迹/墓葬/探方标题，或仅描述位置、填土和随葬品总数时，"
             "属于上下文，不得生成器物记录，也不得把相邻线图编号补作该记录的序号。"
             "evidence_block_ids 只能引用输入 ocr_blocks 中真实存在的 region_id。"
@@ -2048,7 +2057,13 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
             "多个尺寸使用中文分号分隔；统一 cm、mm、m 等单位，"
             "不得把遗迹范围、探方或沟槽尺寸混入器物尺寸。"
             "数值、部位或单位有歧义时保留可确认部分并标记 needs_review，不得猜测。"
-            "morphological_description.value 应删除页眉、图号、遗迹范围、其他器物编号和无关叙述，"
+            "morphological_description.value 应保留当前器物对应的完整描述信息；"
+            "颜色、质地、完整程度、类别、器形等内容即使也分别填入其他字段，仍必须完整保留在形态描述中，"
+            "不得只输出字段拆分后的残余部分。"
+            "若 OCR 原文中明确出现‘灰色泥岩’、‘浅灰色粉砂质泥岩’这类颜色词直接修饰岩性名词的表达，"
+            "surface_color 应只提取颜色词，texture 保留岩性词，形态描述仍保留完整原句；"
+            "不得从黑白线图、器形或未明确的材质描述推断表面颜色。"
+            "仅删除页眉、图号、遗迹范围、其他器物编号和无关叙述；"
             "仅依据当前器物原文，按口沿、颈、肩、腹、底、足、耳、纹饰等逻辑顺序重组为通顺中文；"
             "允许合并同一器物的相邻 OCR 片段和补充必要标点，不得引入原文没有的器形特征。"
             "不得把形态描述截成单个短词（如仅“片状”）；原文若有风化、受沁、器形、穿孔、纹饰等连续描述，"
@@ -2103,7 +2118,8 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
                 "record_eligibility": (
                     "仅当 OCR 原文在同一器物条目中明确包含完整‘遗迹号:序号’时，"
                     "才输出 record_type=artifact；遗迹/墓葬/探方标题和概述段落不输出器物记录。"
-                    "Typology label BI(M5:1): output/link M5:1 only; BI is B型I式 context, not an ID."
+                    "Typology label BI(M5:1): output/link M5:1 only; "
+                    "BI is B型I式 context, not an ID."
                 ),
                 "omit": ["null fields", "page", "bbox", "confidence", "source"],
                 },
@@ -2119,7 +2135,9 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
                     "morphological_description": {
                         "raw_value": "逐字保留当前器物形态描述对应的 OCR 原文片段",
                         "value": (
-                            "去除无关内容并补充标点，按器物部位组织成通顺中文；"
+                            "保留当前器物完整描述；颜色、质地、完整程度、类别等即使另填入专门字段，"
+                            "仍须保留在形态描述中，不得因字段拆分删减；去除无关内容并补充标点，"
+                            "按器物部位组织成通顺中文；"
                             "可纠正上下文能够唯一确定的 OCR 错字，但不得增加新事实"
                         ),
                         "ambiguity": "纠错或归属存在歧义时保留谨慎表达并标记 needs_review",
@@ -2127,7 +2145,10 @@ class OpenAICompatibleExtractionEngine(StructuredExtractionEngineBase):
                 },
                 "system_linkage_schema": {
                     "identity": {
-                        "artifact_id_raw": "OCR 原文中的完整器物编号；没有则为 null。BI(M5:1) 仅写 M5:1，不能写 BI",
+                        "artifact_id_raw": (
+                            "OCR 原文中的完整器物编号；没有则为 null。"
+                            "BI(M5:1) 仅写 M5:1，不能写 BI"
+                        ),
                         "artifact_id_normalized": "规范化后的完整器物编号；没有则为 null",
                     },
                     "visual_link": {

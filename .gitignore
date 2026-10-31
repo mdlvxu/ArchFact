@@ -41,6 +41,12 @@
 **/dist/
 **/.vite/
 **/*.tsbuildinfo
+ArchFactClient/.aic_*/
+ArchFactClient/output/
+ArchFactClient/outputs/
+ArchFactClient/tmp/
+ArchFactClient/mobile/android/**/build/
+ArchFactClient/mobile/
 
 # Large local model weights
 **/models/**/*.pt

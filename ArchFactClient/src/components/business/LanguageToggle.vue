@@ -12,8 +12,15 @@ const { isChinese, t, toggleLocale } = useI18n()
     :title="t('language.current')"
     @click="toggleLocale"
   >
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
+      />
       <path d="M3.5 12h17M12 3c2.2 2.5 3.3 5.5 3.3 9S14.2 18.5 12 21M12 3C9.8 5.5 8.7 8.5 8.7 12s1.1 6.5 3.3 9" />
     </svg>
     <span :class="{ 'language-toggle__active': isChinese }">中</span>

@@ -3,6 +3,7 @@ node_modules/
 
 # 构建产物
 dist/
+/mobile/
 
 # 本地环境变量（含敏感信息，勿提交）
 .env

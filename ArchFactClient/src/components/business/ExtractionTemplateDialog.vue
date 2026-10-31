@@ -142,7 +142,9 @@ watch(
           <header class="template-dialog-header">
             <div>
               <span>{{ t('template.eyebrow') }}</span>
-              <h2 id="template-dialog-title">{{ t('settings.template') }}</h2>
+              <h2 id="template-dialog-title">
+                {{ t('settings.template') }}
+              </h2>
             </div>
             <button
               type="button"
@@ -153,7 +155,10 @@ watch(
             </button>
           </header>
 
-          <nav class="template-tabs" :aria-label="t('settings.template')">
+          <nav
+            class="template-tabs"
+            :aria-label="t('settings.template')"
+          >
             <button
               v-for="template in templates"
               :key="template.id"
@@ -166,13 +171,19 @@ watch(
             </button>
           </nav>
 
-          <section v-if="selectedTemplate" class="selected-template-card">
+          <section
+            v-if="selectedTemplate"
+            class="selected-template-card"
+          >
             <div class="selected-template-title">
               <h3>{{ localize(selectedTemplate.name) }}</h3>
               <span>{{ t('template.labels', { count: selectedTemplate.fields.length }) }}</span>
             </div>
             <div class="selected-labels">
-              <span v-for="field in selectedTemplate.fields" :key="field.key">
+              <span
+                v-for="field in selectedTemplate.fields"
+                :key="field.key"
+              >
                 {{ localize(field.label) }} <b>✓</b>
               </span>
             </div>
@@ -222,7 +233,11 @@ watch(
               </div>
             </label>
 
-            <div v-if="newLabels.length" class="draft-labels" :aria-label="t('common.label')">
+            <div
+              v-if="newLabels.length"
+              class="draft-labels"
+              :aria-label="t('common.label')"
+            >
               <button
                 v-for="label in newLabels"
                 :key="label"
@@ -234,12 +249,18 @@ watch(
               </button>
             </div>
 
-            <p v-if="formError" class="template-form-error" role="alert">
+            <p
+              v-if="formError"
+              class="template-form-error"
+              role="alert"
+            >
               {{ formError }}
             </p>
           </section>
 
-          <p class="dialog-hint">{{ t('template.hint') }}</p>
+          <p class="dialog-hint">
+            {{ t('template.hint') }}
+          </p>
         </section>
       </div>
     </Transition>
@@ -281,6 +302,7 @@ watch(
 
 .template-dialog-header {
   display: flex;
+  flex-wrap: wrap;
   gap: 20px;
   align-items: center;
   justify-content: space-between;
@@ -372,6 +394,8 @@ watch(
 .selected-template-title,
 .new-template-title {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 13px;

@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
 from typing import Any
-from uuid import uuid4
 
-from pymongo import DESCENDING, ReplaceOne, ReturnDocument, UpdateOne
-from pymongo.errors import DuplicateKeyError
+from pymongo import DESCENDING
 
-from app.core.errors import ConflictError, DomainError, NotFoundError
-from app.domain.page_semantics import PageSemantics
-from app.domain.relations import relation_key
-from app.domain.time import utc_now
-from app.domain.verification_sampling import select_balanced_verification_sample
-from app.infrastructure.mongodb import MongoDatabase
+from app.core.errors import NotFoundError
+
 
 class GoldPersistence:
     """Human annotation datasets used for algorithm evaluation."""
@@ -57,6 +49,20 @@ class GoldPersistence:
         if dataset is None:
             raise NotFoundError("人工标注数据集不存在")
         return dataset
+
+    async def delete_gold_dataset(self, dataset_id: str) -> None:
+        """Remove only annotation documents; original files are not touched."""
+        for name in ("gold_links", "gold_regions", "gold_assets", "gold_records"):
+            await self._db[name].delete_many({"dataset_id": dataset_id})
+        await self._db.gold_datasets.delete_one({"_id": dataset_id})
+
+    async def has_gold_dataset_references(self, dataset_id: str) -> bool:
+        if await self._db.quality_evaluation_runs.find_one({"dataset_id": dataset_id}, {"_id": 1}):
+            return True
+        for name in ("verification_sessions", "verification_versions", "ai_verification_runs"):
+            if await self._db[name].find_one({"gold_dataset_id": dataset_id}, {"_id": 1}):
+                return True
+        return False
 
 
     async def get_gold_dataset_for_document(

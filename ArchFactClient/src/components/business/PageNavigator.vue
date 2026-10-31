@@ -95,7 +95,9 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
       role="status"
       :aria-label="t('navigator.importing')"
     >
-      <p class="import-progress__stage">{{ stageLabel }}</p>
+      <p class="import-progress__stage">
+        {{ stageLabel }}
+      </p>
       <p class="import-progress__meta">
         {{ formatByteSize(importProgress.fileSize) }}
       </p>
@@ -148,7 +150,7 @@ onBeforeUnmount(() => thumbnailObserver?.disconnect())
           class="page-thumbnail"
           :src="item.thumbnailUrl"
           :alt="t('navigator.thumbnail', { page: item.page })"
-        />
+        >
         <div
           v-else
           class="page-placeholder"

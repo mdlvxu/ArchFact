@@ -258,6 +258,12 @@ class MongoDatabase:
                 IndexModel([("status", ASCENDING), ("created_at", DESCENDING)]),
             ]
         )
+        await self.database.gold_datasets.create_index(
+            [("report_key", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"report_key": {"$type": "string"}},
+            name="unique_human_baseline_per_report",
+        )
         await self.database.gold_records.create_indexes(
             [
                 IndexModel([("dataset_id", ASCENDING), ("canonical_artifact_id", ASCENDING)]),
@@ -282,18 +288,20 @@ class MongoDatabase:
         await self.database.quality_evaluation_runs.create_indexes(
             [
                 IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
+                IndexModel([("dataset_id", ASCENDING), ("created_at", DESCENDING)]),
                 IndexModel([("job_id", ASCENDING), ("status", ASCENDING)]),
             ]
         )
+        await self._ensure_quality_item_gold_index()
         await self.database.quality_evaluation_items.create_indexes(
             [
                 IndexModel(
                     [("evaluation_id", ASCENDING), ("record_id", ASCENDING)],
-                    unique=True,
                 ),
                 IndexModel([("job_id", ASCENDING), ("match_status", ASCENDING)]),
             ]
         )
+
         await self.database.rematch_runs.create_indexes(
             [
                 IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
@@ -318,6 +326,19 @@ class MongoDatabase:
                     IndexModel([("job_id", ASCENDING), ("created_at", DESCENDING)]),
                 ]
             )
+
+    async def _ensure_quality_item_gold_index(self) -> None:
+        collection = self.database.quality_evaluation_items
+        legacy_key = [("evaluation_id", 1), ("record_id", 1)]
+        for name, definition in (await collection.index_information()).items():
+            if definition.get("key") == legacy_key and definition.get("unique"):
+                await collection.drop_index(name)
+        await collection.create_index(
+            [("evaluation_id", ASCENDING), ("gold_record_id", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"gold_record_id": {"$type": "string"}},
+            name="unique_quality_item_per_human_row",
+        )
 
     async def _ensure_unique_document_sha256_index(self) -> None:
         indexes = await self.database.documents.index_information()

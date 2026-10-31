@@ -26,6 +26,9 @@ function normalizedEvidenceBox(bbox: number[] | null | undefined) {
 
 const detectorFallbackLabels: Partial<Record<SourceRegionKind, string>> = {
   artifact: 'qiwu',
+  line_drawing: 'line drawing',
+  grave_drawing: 'grave drawing',
+  color_plate: 'color plate',
   caption: 'tuzhu',
 }
 
@@ -213,7 +216,7 @@ export function buildPreviewAnnotations(
   })
 
   // Semantic extraction and visual detection are independent. If the LLM fails,
-  // keep the artifact and caption detector results visible. YOLO sequence-number
+  // keep visual and caption detector results visible. YOLO sequence-number
   // regions stay in backend data for matching, but are intentionally hidden here.
   if (!records.length) {
     annotationData?.regions.forEach((region) => {

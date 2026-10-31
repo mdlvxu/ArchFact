@@ -27,6 +27,7 @@ import RematchReportDialog from '@/components/business/RematchReportDialog.vue'
 import QualityEvaluationPanel from '@/components/business/QualityEvaluationPanel.vue'
 import VerificationSummary from '@/components/business/VerificationSummary.vue'
 import VersionHistory from '@/components/business/VersionHistory.vue'
+import { displayMatchingVersion, joinVisibleMetadata } from '@/domain/matching-version'
 import { useI18n } from '@/i18n'
 import type { RematchRelationChange, RematchRun } from '@/types/extraction'
 import type {
@@ -150,7 +151,11 @@ function formatExperimentSummary(experiment: VerificationExperiment) {
     ? machineRun.value.total_artifacts
     : 0
   const artifactCount = activeRunCount > 0 ? activeRunCount : experiment.artifact_count
-  return `${displayExperimentName(experiment)} · ${t('summary.artifacts', { count: artifactCount })} · ${experiment.matching_version_id}`
+  return joinVisibleMetadata(
+    displayExperimentName(experiment),
+    t('summary.artifacts', { count: artifactCount }),
+    displayMatchingVersion(experiment.matching_version_id),
+  )
 }
 
 const experimentSummary = computed(() => {
@@ -511,7 +516,6 @@ function reportFromVersion(version?: VerificationVersionSnapshot): VerificationR
       failureCounts.set(label, (failureCounts.get(label) ?? 0) + 1)
       })
   }
-  const passRate = Math.round(version.report.pass_rate * 100)
   const toPercent = (value: number | null | undefined, fallback: number) => Math.round(
     (value ?? fallback) * 100,
   )
@@ -564,7 +568,6 @@ const versions = computed<VerificationVersion[]>(() =>
         rules: enabledCount,
         records: version.report.total_artifacts,
         samples: version.report.sample_count,
-        matching: version.matching_version_id ?? 'M0',
       }),
       matchingVersionId: version.matching_version_id ?? 'M0',
       staleCount: version.report.stale_count ?? 0,
@@ -862,7 +865,9 @@ onBeforeUnmount(() => {
     >
       <div class="matching-panel__identity">
         <span>{{ t('matching.title') }}</span>
-        <strong>{{ activeMatchingVersionId || 'M0' }}</strong>
+        <strong v-if="displayMatchingVersion(activeMatchingVersionId)">
+          {{ displayMatchingVersion(activeMatchingVersionId) }}
+        </strong>
         <small>{{ t('matching.currentHint') }}</small>
       </div>
       <div
@@ -949,12 +954,15 @@ onBeforeUnmount(() => {
     <section class="experiment-bar panel">
       <div class="experiment-bar__header">
         <div>
-        <span>{{ viewingArchivedExperiment ? t('verification.experiment.historyTitle') : t('verification.experiment.currentTitle') }}</span>
-        <strong>{{ viewingExperimentSummary || experimentSummary || t('common.loading') }}</strong>
-        <small v-if="viewingArchivedExperiment">{{ t('verification.experiment.archivedHint') }}</small>
-        <small v-else-if="awaitingInitialHumanReview">{{ t('verification.experiment.humanReviewReady') }}</small>
-        <small v-else-if="invalidV1Snapshot" class="invalid-v1-hint">{{ t('verification.experiment.invalidV1Hint') }}</small>
-        <small v-else>{{ t('verification.experiment.newHint') }}</small>
+          <span>{{ viewingArchivedExperiment ? t('verification.experiment.historyTitle') : t('verification.experiment.currentTitle') }}</span>
+          <strong>{{ viewingExperimentSummary || experimentSummary || t('common.loading') }}</strong>
+          <small v-if="viewingArchivedExperiment">{{ t('verification.experiment.archivedHint') }}</small>
+          <small v-else-if="awaitingInitialHumanReview">{{ t('verification.experiment.humanReviewReady') }}</small>
+          <small
+            v-else-if="invalidV1Snapshot"
+            class="invalid-v1-hint"
+          >{{ t('verification.experiment.invalidV1Hint') }}</small>
+          <small v-else>{{ t('verification.experiment.newHint') }}</small>
         </div>
         <button
           v-if="awaitingInitialHumanReview"
@@ -965,7 +973,10 @@ onBeforeUnmount(() => {
         >
           {{ openingHumanReview ? t('verification.experiment.openingReview') : t('verification.experiment.openReview') }}
         </button>
-        <label v-if="verificationExperiments.length > 1" class="experiment-switcher">
+        <label
+          v-if="verificationExperiments.length > 1"
+          class="experiment-switcher"
+        >
           <span>{{ t('verification.experiment.switch') }}</span>
           <el-select
             class="experiment-switcher__select"
@@ -1002,17 +1013,34 @@ onBeforeUnmount(() => {
           {{ experimentCreating ? t('verification.experiment.creating') : t('verification.experiment.create') }}
         </button>
       </div>
-      <small v-if="newExperimentBlockedReason" class="new-experiment-blocked-reason">
+      <small
+        v-if="newExperimentBlockedReason"
+        class="new-experiment-blocked-reason"
+      >
         {{ newExperimentBlockedReason }}
       </small>
-      <div v-if="newExperimentConfirmOpen" class="new-experiment-confirm" role="status">
+      <div
+        v-if="newExperimentConfirmOpen"
+        class="new-experiment-confirm"
+        role="status"
+      >
         <div>
           <strong>{{ t('verification.experiment.confirmTitle') }}</strong>
           <p>{{ t('verification.experiment.confirmHint') }}</p>
         </div>
         <div class="new-experiment-confirm__actions">
-          <button type="button" :disabled="experimentCreating" @click="cancelNewExperiment">{{ t('common.cancel') }}</button>
-          <button type="button" :disabled="experimentCreating" @click="confirmNewExperiment">
+          <button
+            type="button"
+            :disabled="experimentCreating"
+            @click="cancelNewExperiment"
+          >
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="button"
+            :disabled="experimentCreating"
+            @click="confirmNewExperiment"
+          >
             {{ experimentCreating ? t('verification.experiment.creating') : t('verification.experiment.confirmCreate') }}
           </button>
         </div>
@@ -1047,7 +1075,7 @@ onBeforeUnmount(() => {
 
 .machine-verification-workspace {
   display: grid;
-  grid-template-columns: minmax(330px, 0.9fr) minmax(650px, 1.8fr);
+  grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.8fr);
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 16px;
   width: 100%;
@@ -1078,6 +1106,7 @@ onBeforeUnmount(() => {
 
   &__header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
@@ -1085,7 +1114,9 @@ onBeforeUnmount(() => {
 
   &__header > div {
     display: grid;
-    grid-template-columns: auto auto;
+    flex: 1 1 340px;
+    min-width: 0;
+    grid-template-columns: auto minmax(0, 1fr);
     gap: 3px 10px;
     align-items: baseline;
   }
@@ -1093,6 +1124,7 @@ onBeforeUnmount(() => {
   span { color: var(--af-text-secondary); font-size: 13px; }
   strong { color: var(--af-primary-dark); }
   small { grid-column: 1 / -1; color: var(--af-text-secondary); }
+  strong, small { overflow-wrap: anywhere; }
 
 }
 
@@ -1171,6 +1203,7 @@ onBeforeUnmount(() => {
 
 .new-experiment-confirm {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
@@ -1376,12 +1409,13 @@ onBeforeUnmount(() => {
 }
 
 .verification-result {
+  container: verification-result / inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   padding: 12px 14px 14px;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .verification-result > h2 {
@@ -1394,23 +1428,21 @@ onBeforeUnmount(() => {
 
 .verification-result__content {
   display: grid;
-  grid-template-columns: minmax(360px, 1.35fr) minmax(310px, 1fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
   gap: 12px;
   flex: 1;
   min-height: 0;
 }
 
-@media (max-width: 1120px) {
-  .machine-verification-workspace {
-    grid-template-columns: minmax(300px, 0.85fr) minmax(560px, 1.6fr);
-  }
-
+@container verification-result (max-width: 680px) {
   .verification-result__content {
-    grid-template-columns: minmax(320px, 1.25fr) minmax(250px, 0.9fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 620px minmax(360px, auto);
+    flex: 0 0 auto;
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .machine-verification-workspace {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto 620px 780px;
@@ -1419,6 +1451,11 @@ onBeforeUnmount(() => {
 
   .matching-panel {
     grid-column: 1;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .matching-panel__actions {
+    flex-wrap: wrap;
   }
 
   .machine-verification-workspace--compact {
@@ -1438,6 +1475,9 @@ onBeforeUnmount(() => {
   }
 
   .new-experiment-button { width: 100%; }
+  .experiment-bar__header > div { flex-basis: auto; grid-template-columns: minmax(0, 1fr); }
+  .experiment-switcher { flex: 0 0 auto; width: 100%; min-width: 0; }
+  .new-experiment-confirm__actions { flex-wrap: wrap; }
   .new-experiment-confirm__actions button { flex: 1; }
 
   .verification-result__content {

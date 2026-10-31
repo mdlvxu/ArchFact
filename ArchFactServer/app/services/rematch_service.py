@@ -2,6 +2,7 @@ import asyncio
 import copy
 from typing import Any
 
+from app.core.errors import ConflictError
 from app.domain.relations import relation_key
 from app.domain.time import utc_now
 from app.infrastructure.task_dispatcher import LocalJobDispatcher
@@ -174,6 +175,15 @@ class RematchService:
             )
             fusion_run_id = str(fusion_run["_id"])
             active_model_runs.add(fusion_run_id)
+            await self._repository.update_rematch_run(
+                rematch_id,
+                progress={
+                    "current": len(pages),
+                    "total": total_steps,
+                    "percent": round(len(pages) / total_steps * 100),
+                    "stage": "result_fusion",
+                },
+            )
             fusion_output = self._result_fusion.fuse(
                 job_id=job_id,
                 records=records,
@@ -243,10 +253,15 @@ class RematchService:
                 report=report,
             )
             if run.get("apply_immediately"):
-                await self._repository.apply_rematch_snapshot(
-                    job_id=job_id,
-                    rematch_id=rematch_id,
-                )
+                try:
+                    await self._repository.apply_rematch_snapshot(
+                        job_id=job_id,
+                        rematch_id=rematch_id,
+                    )
+                except ConflictError as exc:
+                    # Keep the completed preview available for manual apply after
+                    # the active GT evaluation or human review has finished.
+                    await self._repository.update_rematch_run(rematch_id, error=str(exc))
         except asyncio.CancelledError:
             for model_run_id in active_model_runs:
                 await self._repository.finish_model_run(model_run_id, status="cancelled")

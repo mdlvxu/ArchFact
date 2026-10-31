@@ -1408,7 +1408,7 @@ onBeforeUnmount(() => {
                 <em
                   v-if="
                     card.kind === 'color_plate' &&
-                    (card.annotation.approximate || colorPlateReferenceMatched)
+                      (card.annotation.approximate || colorPlateReferenceMatched)
                   "
                   class="evidence-target__inferred-badge"
                 >{{
@@ -1492,9 +1492,11 @@ onBeforeUnmount(() => {
 }
 
 .content-preview {
+  container: content-preview / inline-size;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   height: 100%;
   padding: 12px;
   overflow: hidden;
@@ -1502,6 +1504,8 @@ onBeforeUnmount(() => {
 
 .preview-header {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   min-height: 34px;
@@ -1584,6 +1588,8 @@ onBeforeUnmount(() => {
 
 .preview-tools {
   display: flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   flex: 0 0 auto;
   gap: 6px;
   align-items: center;
@@ -2078,7 +2084,7 @@ onBeforeUnmount(() => {
   border-radius: 50%;
 }
 
-@media (max-width: 980px) {
+@container content-preview (max-width: 600px) {
   .preview-file { flex-basis: auto; max-width: 120px; }
   .preview-file__name { display: none; }
   .preview-tools button span { display: none; }

@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
 from typing import Any
 from uuid import uuid4
 
-from pymongo import DESCENDING, ReplaceOne, ReturnDocument, UpdateOne
+from pymongo import DESCENDING, UpdateOne
 from pymongo.errors import DuplicateKeyError
 
-from app.core.errors import ConflictError, DomainError, NotFoundError
-from app.domain.page_semantics import PageSemantics
-from app.domain.relations import relation_key
+from app.core.errors import NotFoundError
 from app.domain.time import utc_now
-from app.domain.verification_sampling import select_balanced_verification_sample
-from app.infrastructure.mongodb import MongoDatabase
+
 
 class DocumentPersistence:
     """PDF documents, pages, images, and text chunks."""
@@ -48,7 +43,7 @@ class DocumentPersistence:
             existing = await self.get_document_by_sha256(sha256)
             if existing is None:
                 raise
-            return existing
+            return {**existing, "_reused_existing": True}
         return document
 
 
@@ -64,6 +59,21 @@ class DocumentPersistence:
         if document is None:
             raise NotFoundError("PDF 文档不存在")
         return document
+
+
+    async def list_documents(self) -> list[dict[str, Any]]:
+        cursor = self._db.documents.find({}).sort("created_at", DESCENDING)
+        documents = await cursor.to_list(length=10000)
+        unique_documents: list[dict[str, Any]] = []
+        seen_hashes: set[str] = set()
+        for document in documents:
+            sha256 = document.get("sha256")
+            if sha256 and sha256 in seen_hashes:
+                continue
+            if sha256:
+                seen_hashes.add(sha256)
+            unique_documents.append(document)
+        return unique_documents
 
 
     async def update_document(self, document_id: str, **fields: Any) -> None:

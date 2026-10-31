@@ -87,6 +87,21 @@ def test_seed_defaults_refreshes_builtins_and_preserves_custom_templates() -> No
     assert any(item["id"] == "custom-pottery" for item in repository.templates)
     basic_template = next(item for item in repository.templates if item["id"] == "basic-research")
     assert basic_template["fields"][0]["instruction"]
+    basic_color_instruction = next(
+        field["instruction"]
+        for field in basic_template["fields"]
+        if field["key"] == "surface_color"
+    )
+    latest_template = next(
+        item for item in repository.templates if item["id"] == "latest-artifact-card"
+    )
+    latest_color_instruction = next(
+        field["instruction"]
+        for field in latest_template["fields"]
+        if field["key"] == "surface_color"
+    )
+    assert "灰色泥岩" in basic_color_instruction
+    assert "灰色泥岩" in latest_color_instruction
 
 
 def test_seed_defaults_preserves_a_saved_builtin_field_instruction() -> None:

@@ -5,7 +5,6 @@ from app.models.schemas import ExtractionTemplateDefinition, PostProcessingRuleD
 from app.repositories.mongo_repository import MongoRepository
 from app.services.extraction_engine import OpenAICompatibleExtractionEngine
 
-
 DEFAULT_EXTRACTION_SYSTEM_PROMPT = OpenAICompatibleExtractionEngine._system_prompt()
 
 DEFAULT_TEMPLATES = [
@@ -29,7 +28,12 @@ DEFAULT_TEMPLATES = [
                 "key": "surface_color",
                 "label": "Surface Color",
                 "type": "string",
-                "instruction": "只提取原文明示的表面颜色，不得根据黑白线图推断颜色。",
+                "instruction": (
+                    "只提取原文明示的表面颜色，不得根据黑白线图推断颜色；"
+                    "如‘灰色泥岩’、‘浅灰色粉砂质泥岩’这类颜色词直接修饰岩性名词，"
+                    "表面颜色只填写颜色词（如‘灰色’），材质/质地字段保留原文岩性词，"
+                    "形态描述仍保留完整原句。"
+                ),
                 "evidence_kind": "text",
             },
             {
@@ -56,7 +60,8 @@ DEFAULT_TEMPLATES = [
                 "label": "Morphological Description",
                 "type": "string",
                 "instruction": (
-                    "提取当前器物的口、颈、腹、底、足、纹饰等形态描述；"
+                    "提取当前器物对应的完整描述；颜色、质地、完整程度、类别等信息即使另填入专门字段，"
+                    "也必须保留在形态描述中，不得只留下字段拆分后的残余内容。"
                     "raw_value 保留原始 OCR 片段；value 可去除无关内容、修复断行并补充标点，"
                     "按器物部位的逻辑顺序重组为通顺中文；只能纠正上下文能够唯一确定的 OCR 错字，"
                     "不得合并同页其他器物的描述或增加原文没有的器形特征。"
@@ -137,14 +142,22 @@ DEFAULT_TEMPLATES = [
                 "key": "morphological_description",
                 "label": "Morphological Description",
                 "type": "string",
-                "instruction": "直接提取当前器物的外形描述原句，不进行总结、概括或补写。",
+                "instruction": (
+                    "直接提取当前器物对应的完整描述原句，不进行总结、概括或补写。"
+                    "颜色、质地、完整程度、类别等内容即使另填入专门字段，也必须保留在形态描述中，"
+                    "不得因字段拆分而删减。"
+                ),
                 "evidence_kind": "text",
             },
             {
                 "key": "surface_color",
                 "label": "Surface Color",
                 "type": "string",
-                "instruction": "直接提取原文明示的颜色；不得根据黑白线图、器形或材质推断。",
+                "instruction": (
+                    "直接提取原文明示的颜色；如‘灰色泥岩’、‘浅灰色粉砂质泥岩’这类颜色词"
+                    "直接修饰岩性名词，表面颜色只填写颜色词（如‘灰色’），材质/质地字段保留原文"
+                    "岩性词，形态描述仍保留完整原句；不得根据黑白线图、器形或材质推断。"
+                ),
                 "evidence_kind": "text",
             },
             {
@@ -179,7 +192,10 @@ DEFAULT_TEMPLATES = [
                 "key": "completeness",
                 "label": "Completeness",
                 "type": "string",
-                "instruction": "提取完整、残、残片、碎片、复原等原文明示信息；残碎器物也必须保留记录。",
+                "instruction": (
+                    "提取完整、残、残片、碎片、复原等原文明示信息；"
+                    "残碎器物也必须保留记录。"
+                ),
                 "evidence_kind": "text",
             },
             {

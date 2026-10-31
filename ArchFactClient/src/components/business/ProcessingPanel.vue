@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Delete, Download, RefreshRight, VideoPause } from '@element-plus/icons-vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { buildProcessingMetrics } from '@/domain/processing-metrics'
 import { localizeProcessingLog, useI18n } from '@/i18n'
 
@@ -34,7 +34,22 @@ const emit = defineEmits<{
 }>()
 
 const nowMs = ref(Date.now())
+const logBoxRef = ref<HTMLDivElement | null>(null)
 let clockTimer: number | undefined
+
+function scrollToLatestLog() {
+  const logBox = logBoxRef.value
+  if (logBox) logBox.scrollTop = logBox.scrollHeight
+}
+
+watch(
+  () => {
+    const latestLog = props.logs[props.logs.length - 1]
+    return [props.logs.length, latestLog?.id, latestLog?.text, latestLog?.status, locale.value]
+  },
+  scrollToLatestLog,
+  { flush: 'post' },
+)
 
 const metrics = computed(() => buildProcessingMetrics({
   startedAt: props.startedAt,
@@ -53,6 +68,7 @@ const stoppedSummary = computed(() => t('processing.cancelledSummary', {
 }))
 
 onMounted(() => {
+  scrollToLatestLog()
   clockTimer = globalThis.setInterval(() => {
     if (props.running) nowMs.value = Date.now()
   }, 1000)
@@ -86,6 +102,7 @@ onBeforeUnmount(() => {
 
     <div class="processing__body">
       <div
+        ref="logBoxRef"
         class="log-box"
         :aria-label="t('processing.title')"
       >
@@ -182,12 +199,17 @@ onBeforeUnmount(() => {
 }
 
 .processing {
+  container: processing / inline-size;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   height: 100%;
   padding: 12px 11px 10px;
   overflow: hidden;
 }
 
 .panel-title {
+  flex-shrink: 0;
   margin-bottom: 8px;
   font-size: var(--af-font-panel-title);
   font-weight: 500;
@@ -195,6 +217,7 @@ onBeforeUnmount(() => {
 }
 
 .processing__progress {
+  flex-shrink: 0;
   margin-bottom: 7px;
 
   :deep(.el-progress-bar__outer) {
@@ -209,16 +232,12 @@ onBeforeUnmount(() => {
   color: #9a5b19;
 }
 
-.processing__stopped-summary + .processing__body {
-  height: calc(100% - 75px);
-}
-
 .processing__body {
   display: grid;
+  flex: 1;
   grid-template-columns: minmax(180px, 1.35fr) minmax(175px, 1fr) minmax(125px, 0.65fr);
   gap: 12px;
   align-items: center;
-  height: calc(100% - 51px);
   min-height: 0;
 }
 
@@ -300,6 +319,7 @@ onBeforeUnmount(() => {
   font-weight: 500;
   line-height: 1.25;
   color: #25221f;
+  overflow-wrap: anywhere;
 }
 
 .processing__actions {
@@ -311,15 +331,36 @@ onBeforeUnmount(() => {
   width: 100%;
   margin-left: 0;
   font-size: var(--af-font-body);
+  min-height: 30px;
+  height: auto;
+  padding: 5px 8px;
+  white-space: normal;
 }
 
-@media (max-width: 760px) {
+@container processing (max-width: 620px) {
   .processing__body {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 0.75fr);
+    grid-template-rows: minmax(110px, 1fr) auto;
+    gap: 10px;
+  }
+
+  .log-box {
+    grid-column: 1 / -1;
+  }
+
+  .metrics {
+    gap: 8px;
+  }
+}
+
+@container processing (max-width: 380px) {
+  .processing__body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(120px, 1fr) auto auto;
   }
 
   .processing__actions {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

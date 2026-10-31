@@ -27,3 +27,11 @@ def normalize_identifier(value: Any) -> str:
 def canonical_artifact_id(context: Any, sequence: Any) -> str:
     parts = (clean_value(context), clean_value(sequence))
     return normalize_identifier(",".join(part for part in parts if part))
+
+
+def normalize_report_name(filename: str) -> str:
+    """Stable key for matching one report's imports to its human baseline."""
+    name = unicodedata.normalize("NFKC", filename).strip()
+    if name.lower().endswith(".pdf"):
+        name = name[:-4]
+    return re.sub(r"\s+", "", name).casefold()

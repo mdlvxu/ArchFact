@@ -21,6 +21,7 @@ from app.services.page_preprocessor import PagePreprocessor
 from app.services.pdf_parser import PdfParser
 from app.services.post_processor import PostProcessor
 from app.services.quality_evaluation_service import QualityEvaluationService
+from app.services.recognition_service import RecognitionService
 from app.services.region_processor import RegionProcessor
 from app.services.relation_matcher import RelationMatcher, RelationMatcherConfig
 from app.services.rematch_service import RematchService
@@ -46,6 +47,7 @@ class Container:
     gold_dataset_service: GoldDatasetService
     verification_service: VerificationService
     quality_evaluation_service: QualityEvaluationService
+    recognition_service: RecognitionService
 
 
 async def build_container(settings: Settings) -> Container:
@@ -57,6 +59,7 @@ async def build_container(settings: Settings) -> Container:
     storage = GridFsStorage(database, settings)
     image_storage = LocalImageStorage(settings)
     ocr_engine = build_ocr_engine(settings)
+    detection_engine = build_detection_engine(settings)
     dispatcher = LocalJobDispatcher()
     rematch_dispatcher = LocalJobDispatcher()
     verification_dispatcher = LocalJobDispatcher()
@@ -76,7 +79,7 @@ async def build_container(settings: Settings) -> Container:
             ocr_engine=ocr_engine,
         ),
         engine=build_extraction_engine(settings),
-        detector=build_detection_engine(settings),
+        detector=detection_engine,
         region_processor=RegionProcessor(
             settings=settings,
             image_storage=image_storage,
@@ -108,6 +111,7 @@ async def build_container(settings: Settings) -> Container:
     quality_evaluation_service = QualityEvaluationService(
         repository=repository,
         dispatcher=quality_evaluation_dispatcher,
+        settings=settings,
     )
     quality_evaluation_dispatcher.bind(quality_evaluation_service.run)
     return Container(
@@ -127,4 +131,10 @@ async def build_container(settings: Settings) -> Container:
         gold_dataset_service=GoldDatasetService(settings, repository),
         verification_service=verification_service,
         quality_evaluation_service=quality_evaluation_service,
+        recognition_service=RecognitionService(
+            settings=settings,
+            repository=repository,
+            detector=detection_engine,
+            ocr_engine=ocr_engine,
+        ),
     )

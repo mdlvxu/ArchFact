@@ -237,6 +237,21 @@ describe('Data Preview redesigned interactions', () => {
     expect(wrapper.find('.stale-sample').text()).toContain('record-stale')
   })
 
+  it('hides the default M0 label in verification catalog', () => {
+    const wrapper = mount(ArchaeologicalCatalogs, {
+      props: {
+        records: [record],
+        pages: [],
+        selectedPage: 8,
+        selectedRecordId: record.id,
+        mode: 'verify',
+      },
+    })
+
+    expect(wrapper.text()).not.toContain('M0')
+    expect(wrapper.find('.verification-context span').exists()).toBe(false)
+  })
+
   it('switches the active blue relation line when another annotation is selected', async () => {
     const wrapper = mount(ContentPreview, {
       props: {

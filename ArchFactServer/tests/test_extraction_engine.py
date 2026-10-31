@@ -292,12 +292,21 @@ def test_llm_prompt_defines_fluent_but_grounded_field_value_policy() -> None:
     assert "measurements.value" in system_prompt
     assert "morphological_description.value" in system_prompt
     assert "不得补充原文没有的器物事实" in system_prompt
+    assert "不得只输出字段拆分后的残余" in system_prompt
+    assert "surface_color 应只提取颜色词" in system_prompt
     assert "BI(M5:1)" in system_prompt
     assert "archaeological_card_contract" not in system_prompt
     assert user_prompt["field_value_policy"]["measurements"]["value"].startswith("整理为简洁的")
     assert "按器物部位" in user_prompt["field_value_policy"]["morphological_description"]["value"]
     assert "archaeological_card_contract" not in user_prompt
     assert "BI(M5:1)" in user_prompt["compact_output_contract"]["record_eligibility"]
+
+    configured_system_prompt = OpenAICompatibleExtractionEngine._system_prompt(
+        config.model_copy(update={"system_prompt": "用户自定义公共提示词"})
+    )
+    assert configured_system_prompt.startswith("用户自定义公共提示词")
+    assert "不得只输出字段拆分后的残余" in configured_system_prompt
+    assert "surface_color 只填写颜色词" in configured_system_prompt
 
 
 def test_chunk_merge_discards_empty_or_unidentified_single_field_fragments() -> None:
@@ -1076,7 +1085,7 @@ def test_groq_long_ocr_is_split_and_does_not_duplicate_full_text(
         llm_max_tokens=512,
         llm_input_chunk_chars=500,
         llm_chunk_overlap_chars=0,
-        llm_request_token_budget=3000,
+        llm_request_token_budget=4000,
     )
     engine = OpenAICompatibleExtractionEngine(settings)
     config = ExtractionConfig(
@@ -1629,7 +1638,7 @@ def test_semantic_chunking_keeps_each_artifact_with_its_following_description() 
             llm_max_tokens=512,
             llm_input_chunk_chars=500,
             llm_chunk_overlap_chars=0,
-            llm_request_token_budget=3000,
+            llm_request_token_budget=4000,
         )
     )
     config = ExtractionConfig(

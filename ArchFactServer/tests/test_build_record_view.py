@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.application.views import build_record_view
 
@@ -20,7 +20,7 @@ def test_build_record_view_tolerates_missing_created_at() -> None:
 
 
 def test_build_record_view_prefers_updated_at_fallback() -> None:
-    stamp = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+    stamp = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
     view = build_record_view(
         {
             "_id": "rec_updated",

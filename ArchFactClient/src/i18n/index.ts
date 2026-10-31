@@ -139,6 +139,8 @@ const en: Record<string, string> = {
   'nav.extraction': 'Data Extraction',
   'nav.preview': 'Data Preview',
   'nav.verification': 'Machine Verification',
+  'nav.evaluation': 'GT Evaluation',
+  'nav.insights': 'Data Insights',
   'nav.inputPdf': 'Input PDF',
   'nav.importingPdf': 'Importing…',
   'nav.output': 'Output',
@@ -192,6 +194,7 @@ const en: Record<string, string> = {
   'home.pdfOnly': 'Please select a PDF file',
   'home.fileTooLarge': 'PDF files cannot exceed {max} MB',
   'home.loaded': 'Loaded {name}, {count} pages in total',
+  'home.reusedPdf': 'This PDF is already stored. The existing copy was reused; no re-import was needed.',
   'home.loadFailed': 'Failed to load the PDF file',
   'home.pdfNotLoaded': 'The PDF document has not been loaded',
   'home.pdfRenderUnsupported': 'This browser does not support PDF canvas rendering',
@@ -527,7 +530,7 @@ const en: Record<string, string> = {
   'version.relationChanged': '{count} relations changed',
   'version.exportable': 'Ready to export',
   'version.exportBlocked': 'Export blocked',
-  'version.summary': '{rules} effective assertions · {records} full records · {samples} fixed human samples · {matching}',
+  'version.summary': '{rules} effective assertions · {records} full records · {samples} fixed human samples',
   'notFound.message': 'Sorry, the page you visited does not exist',
   'notFound.home': 'Back to Home',
   'api.unauthorized': 'Your session has expired. Please sign in again.',
@@ -670,6 +673,8 @@ const zh: Record<string, string> = {
   'nav.extraction': '数据提取',
   'nav.preview': '数据预览',
   'nav.verification': '机器校验',
+  'nav.evaluation': 'GT 评测',
+  'nav.insights': '数据洞察',
   'nav.inputPdf': '导入 PDF',
   'nav.importingPdf': '正在导入…',
   'nav.output': '导出',
@@ -723,6 +728,7 @@ const zh: Record<string, string> = {
   'home.pdfOnly': '请选择 PDF 格式文件',
   'home.fileTooLarge': 'PDF 不能超过 {max} MB',
   'home.loaded': '已加载 {name}，共 {count} 页',
+  'home.reusedPdf': '这本 PDF 已保存过，已复用现有文件，无需重新导入。',
   'home.loadFailed': 'PDF 文件加载失败',
   'home.pdfNotLoaded': 'PDF 文档尚未加载',
   'home.pdfRenderUnsupported': '当前浏览器不支持 PDF 画布渲染',
@@ -1058,7 +1064,7 @@ const zh: Record<string, string> = {
   'version.relationChanged': '{count} 条关系变化',
   'version.exportable': '可导出',
   'version.exportBlocked': '禁止导出',
-  'version.summary': '{rules} 条有效断言 · {records} 条全量记录 · {samples} 条固定人工样本 · {matching}',
+  'version.summary': '{rules} 条有效断言 · {records} 条全量记录 · {samples} 条固定人工样本',
   'notFound.message': '抱歉，您访问的页面不存在',
   'notFound.home': '返回首页',
   'api.unauthorized': '登录已过期，请重新登录。',
@@ -1168,6 +1174,14 @@ export function translate(key: string, params: MessageParams = {}) {
 export function localizeKnownText(value: string) {
   if (localeState.value !== 'zh-CN') return value
   return knownChineseText[value] ?? value
+}
+
+/** Localize built-in template names, including legacy records saved in Chinese. */
+export function localizeTemplateName(value: string) {
+  const canonical = Object.entries(knownChineseText).find(
+    ([english, chinese]) => english.endsWith('Template') && chinese === value,
+  )?.[0] ?? value
+  return localizeKnownText(canonical)
 }
 
 /**

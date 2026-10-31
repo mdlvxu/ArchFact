@@ -1,4 +1,4 @@
-import http, { get, patch, post, put } from '@/api/http'
+import http, { del, get, patch, post, put } from '@/api/http'
 import { constraintTypeMap, fieldTypeMap } from '@/domain/extraction-config'
 import { pdfUploadTimeoutMs } from '@/domain/pdf-import'
 import type {
@@ -28,7 +28,15 @@ import type {
   VerificationExperiment,
   VerificationVersionSnapshot,
 } from '@/types/verification'
-import type { GoldDataset, QualityEvaluationRun } from '@/types/quality-evaluation'
+import type {
+  EvaluationJobOption,
+  CrossReportEvaluationItem,
+  GoldDataset,
+  GoldWorkbookPreview,
+  QualityEvaluationHistoryItem,
+  QualityEvaluationRun,
+  QualityEvaluationItemPage,
+} from '@/types/quality-evaluation'
 
 export interface UploadedDocument {
   document_id: string
@@ -36,6 +44,7 @@ export interface UploadedDocument {
   size: number
   status: string
   page_count?: number | null
+  reused_existing?: boolean
 }
 
 interface CreatedExtractionJob {
@@ -196,6 +205,10 @@ export function getUploadedDocument(documentId: string): Promise<UploadedDocumen
   return get<UploadedDocument>(`/v1/documents/${documentId}`)
 }
 
+export function listUploadedDocuments(): Promise<UploadedDocument[]> {
+  return get<UploadedDocument[]>('/v1/documents')
+}
+
 export function getDocumentImageContentUrl(documentId: string, imageId: string) {
   return `/api/v1/documents/${documentId}/images/${imageId}/content`
 }
@@ -291,6 +304,10 @@ export async function getExtractionRecords(jobId: string): Promise<ExtractionRec
   } while (records.length < total)
 
   return records
+}
+
+export function getArtifactEntityThumbnails(jobId: string): Promise<Record<string, string>> {
+  return get<Record<string, string>>(`/v1/extraction-jobs/${jobId}/entity-thumbnails`)
 }
 
 export function updateExtractionRecordReview(
@@ -580,12 +597,88 @@ export function getQualityEvaluation(
   )
 }
 
+export function controlQualityEvaluation(
+  jobId: string, evaluationId: string, action: 'pause' | 'resume' | 'terminate',
+): Promise<QualityEvaluationRun> {
+  return post<QualityEvaluationRun>(
+    `/v1/extraction-jobs/${jobId}/quality-evaluations/${evaluationId}/${action}`,
+  )
+}
+
 export function getQualityEvaluations(jobId: string): Promise<QualityEvaluationRun[]> {
   return get<QualityEvaluationRun[]>(`/v1/extraction-jobs/${jobId}/quality-evaluations`)
 }
 
+export function getQualityEvaluationItems(
+  jobId: string, evaluationId: string, page = 1, pageSize = 50,
+): Promise<QualityEvaluationItemPage> {
+  return get<QualityEvaluationItemPage>(
+    `/v1/extraction-jobs/${jobId}/quality-evaluations/${evaluationId}/items`,
+    { params: { page, page_size: pageSize } },
+  )
+}
+
+export function downloadQualityEvaluation(
+  jobId: string, evaluationId: string, kind: 'detail' | 'text_image',
+): Promise<Blob> {
+  return http.get<Blob, Blob>(
+    `/v1/extraction-jobs/${jobId}/quality-evaluations/${evaluationId}/export`,
+    { params: { kind }, responseType: 'blob', timeout: 120_000 },
+  )
+}
+
 export function getGoldDatasets(): Promise<GoldDataset[]> {
   return get<GoldDataset[]>('/v1/gold-datasets')
+}
+
+export function listDocumentExtractionJobs(documentId: string): Promise<EvaluationJobOption[]> {
+  return get<EvaluationJobOption[]>(`/v1/extraction-jobs?document_id=${encodeURIComponent(documentId)}`)
+}
+
+export function listRecentCompletedExtractionJobs(): Promise<EvaluationJobOption[]> {
+  return get<EvaluationJobOption[]>('/v1/extraction-jobs/history')
+}
+
+export function getCrossReportEvaluationHistory(): Promise<CrossReportEvaluationItem[]> {
+  return get<CrossReportEvaluationItem[]>('/v1/gold-datasets/evaluations')
+}
+
+export function previewGoldWorkbook(file: File): Promise<GoldWorkbookPreview> {
+  const form = new FormData()
+  form.append('file', file)
+  return post<GoldWorkbookPreview>('/v1/gold-datasets/preview', form, { timeout: 60_000 })
+}
+
+export function importGoldWorkbook(input: {
+  documentId: string
+  name: string
+  version: string
+  keyMode: 'artifact_id' | 'context_sequence'
+  fieldMapping: Record<string, string>
+  file: File
+  onUploadProgress?: (loaded: number, total?: number) => void
+}): Promise<GoldDataset> {
+  const form = new FormData()
+  form.append('document_id', input.documentId)
+  form.append('name', input.name)
+  form.append('version', input.version)
+  form.append('key_mode', input.keyMode)
+  form.append('field_mapping', JSON.stringify(input.fieldMapping))
+  form.append('file', input.file)
+  return post<GoldDataset>('/v1/gold-datasets/import', form, {
+    timeout: 120_000,
+    onUploadProgress: (event) => input.onUploadProgress?.(event.loaded, event.total),
+  })
+}
+
+export function deleteGoldDataset(datasetId: string): Promise<null> {
+  return del<null>(`/v1/gold-datasets/${encodeURIComponent(datasetId)}`)
+}
+
+export function getDatasetQualityEvaluations(
+  datasetId: string,
+): Promise<QualityEvaluationHistoryItem[]> {
+  return get<QualityEvaluationHistoryItem[]>(`/v1/gold-datasets/${datasetId}/evaluations`)
 }
 
 export function importWenjiashanGoldDataset(

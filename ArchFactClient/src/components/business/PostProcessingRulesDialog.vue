@@ -164,7 +164,9 @@ watch(
           <header class="rules-dialog-header">
             <div>
               <span>{{ t('rules.eyebrow') }}</span>
-              <h2 id="rules-dialog-title">{{ t('settings.rules') }}</h2>
+              <h2 id="rules-dialog-title">
+                {{ t('settings.rules') }}
+              </h2>
             </div>
             <button
               type="button"
@@ -175,7 +177,10 @@ watch(
             </button>
           </header>
 
-          <div class="rule-dialog-list" :aria-label="t('settings.rules')">
+          <div
+            class="rule-dialog-list"
+            :aria-label="t('settings.rules')"
+          >
             <article
               v-for="rule in draftRules"
               :key="rule.id"
@@ -194,7 +199,10 @@ watch(
                   <span />
                 </button>
 
-                <div class="dialog-rule-content" :title="`${t('common.example')}: ${rule.example}`">
+                <div
+                  class="dialog-rule-content"
+                  :title="`${t('common.example')}: ${rule.example}`"
+                >
                   <strong>{{ localize(rule.name) }}</strong>
                   <p>{{ localize(rule.description) }}</p>
                 </div>
@@ -205,7 +213,10 @@ watch(
                     :aria-label="`${t('common.edit')} ${localize(rule.name)}`"
                     @click="beginEdit(rule)"
                   >
-                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                    <svg
+                      viewBox="0 0 20 20"
+                      aria-hidden="true"
+                    >
                       <path d="m4 14-1 4 4-1L17 7l-3-3zM12.5 5.5l3 3" />
                     </svg>
                   </button>
@@ -214,7 +225,10 @@ watch(
                     :aria-label="`${t('common.delete')} ${localize(rule.name)}`"
                     @click="removeRule(rule.id)"
                   >
-                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                    <svg
+                      viewBox="0 0 20 20"
+                      aria-hidden="true"
+                    >
                       <path d="M4 6h12M8 3h4l1 3H7zM6 6l1 11h6l1-11M9 9v5M11 9v5" />
                     </svg>
                   </button>
@@ -226,17 +240,42 @@ watch(
                 class="dialog-rule-editor"
                 @submit.prevent="saveEdit(rule.id)"
               >
-                <input v-model="editName" type="text" maxlength="70" :aria-label="t('common.name')">
-                <input v-model="editDescription" type="text" maxlength="220" :aria-label="t('common.description')">
-                <input v-model="editExample" type="text" maxlength="160" :aria-label="t('common.example')">
+                <input
+                  v-model="editName"
+                  type="text"
+                  maxlength="70"
+                  :aria-label="t('common.name')"
+                >
+                <input
+                  v-model="editDescription"
+                  type="text"
+                  maxlength="220"
+                  :aria-label="t('common.description')"
+                >
+                <input
+                  v-model="editExample"
+                  type="text"
+                  maxlength="160"
+                  :aria-label="t('common.example')"
+                >
                 <div>
-                  <button type="button" @click="cancelEdit">{{ t('common.cancel') }}</button>
-                  <button type="submit">{{ t('common.save') }}</button>
+                  <button
+                    type="button"
+                    @click="cancelEdit"
+                  >
+                    {{ t('common.cancel') }}
+                  </button>
+                  <button type="submit">
+                    {{ t('common.save') }}
+                  </button>
                 </div>
               </form>
             </article>
 
-            <p v-if="draftRules.length === 0" class="rules-empty">
+            <p
+              v-if="draftRules.length === 0"
+              class="rules-empty"
+            >
               {{ t('rules.empty') }}
             </p>
           </div>
@@ -247,7 +286,10 @@ watch(
                 <h3>{{ t('rules.new') }}</h3>
                 <span>{{ t('rules.defaultEnabled') }}</span>
               </div>
-              <button type="button" @click="addRule">
+              <button
+                type="button"
+                @click="addRule"
+              >
                 <b>+</b> {{ t('common.add') }}
               </button>
             </div>
@@ -281,12 +323,18 @@ watch(
               >
             </label>
 
-            <p v-if="formError" class="rule-form-error" role="alert">
+            <p
+              v-if="formError"
+              class="rule-form-error"
+              role="alert"
+            >
               {{ formError }}
             </p>
           </section>
 
-          <p class="rules-dialog-hint">{{ t('rules.hint') }}</p>
+          <p class="rules-dialog-hint">
+            {{ t('rules.hint') }}
+          </p>
         </section>
       </div>
     </Transition>

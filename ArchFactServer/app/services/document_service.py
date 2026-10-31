@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import UploadFile
-
 from pymongo.errors import DuplicateKeyError
 
 from app.core.errors import DomainError
@@ -23,22 +22,25 @@ class DocumentService:
         sha256, size = await self._storage.digest_pdf(file)
         existing = await self._repository.get_document_by_sha256(sha256)
         if existing is not None:
-            return existing
+            return {**existing, "_reused_existing": True}
 
         file_id = await self._storage.store_pdf(file, sha256=sha256)
         try:
-            return await self._repository.create_document(
+            document = await self._repository.create_document(
                 filename=filename,
                 content_type=file.content_type or "application/pdf",
                 size=size,
                 sha256=sha256,
                 gridfs_id=file_id,
             )
+            if document.get("_reused_existing"):
+                await self._storage.delete(file_id)
+            return document
         except DuplicateKeyError:
             await self._storage.delete(file_id)
             reused = await self._repository.get_document_by_sha256(sha256)
             if reused is not None:
-                return reused
+                return {**reused, "_reused_existing": True}
             raise
         except Exception:
             await self._storage.delete(file_id)
@@ -46,3 +48,6 @@ class DocumentService:
 
     async def get(self, document_id: str) -> dict[str, Any]:
         return await self._repository.get_document(document_id)
+
+    async def list(self) -> list[dict[str, Any]]:
+        return await self._repository.list_documents()

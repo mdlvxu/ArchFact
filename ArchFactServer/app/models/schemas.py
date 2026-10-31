@@ -157,6 +157,7 @@ class DocumentCreated(BaseModel):
     filename: str
     size: int
     status: str
+    reused_existing: bool = False
 
 
 class DocumentView(DocumentCreated):
@@ -543,6 +544,8 @@ class GoldDatasetView(BaseModel):
     id: str
     name: str
     document_id: str
+    document_filename: str = ""
+    report_key: str = ""
     version: str
     status: Literal["ready", "importing", "failed"] = "ready"
     source_type: str = "human_annotation"
@@ -553,6 +556,12 @@ class GoldDatasetView(BaseModel):
     matched_artifact_assets: int = 0
     matched_color_plate_assets: int = 0
     source_document_verified: bool = False
+    workbook_name: str = ""
+    key_mode: str = "artifact_id"
+    field_mapping: dict[str, str] = Field(default_factory=dict)
+    capabilities: dict[str, bool] = Field(default_factory=dict)
+    source_row_count: int = 0
+    unkeyed_row_count: int = 0
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -576,7 +585,10 @@ class QualityEvaluationRunView(BaseModel):
     dataset_id: str
     dataset_version: str = ""
     matching_version_id: str = "M0"
-    status: Literal["queued", "running", "completed", "failed"]
+    template_name: str = ""
+    scoring_version: str = ""
+    semantic_model: str = ""
+    status: Literal["queued", "running", "paused", "completed", "failed", "terminated"]
     progress: QualityEvaluationProgress = Field(default_factory=QualityEvaluationProgress)
     summary: dict[str, Any] | None = None
     field_metrics: list[dict[str, Any]] = Field(default_factory=list)
@@ -585,6 +597,7 @@ class QualityEvaluationRunView(BaseModel):
     relation_metrics: dict[str, dict[str, Any]] = Field(default_factory=dict)
     unmatched: dict[str, list[str]] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    logs: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
     created_at: datetime
     updated_at: datetime
@@ -596,6 +609,8 @@ class QualityEvaluationItemView(BaseModel):
     evaluation_id: str
     job_id: str
     record_id: str
+    crop_region_id: str | None = None
+    color_plate_region_id: str | None = None
     artifact_id: str = ""
     gold_record_id: str | None = None
     match_status: Literal["matched", "not_found", "ambiguous"]

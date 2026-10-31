@@ -10,7 +10,6 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-
 _HEADER_FILL = PatternFill("solid", fgColor="B96420")
 _HEADER_FONT = Font(color="FFFFFF", bold=True)
 _TITLE_FONT = Font(size=14, bold=True, color="803F14")
@@ -58,7 +57,9 @@ def _field_failure_summary(field_results: list[dict[str, Any]]) -> tuple[str, st
         if result.get("verdict") == "failed" and result.get("causes_overall_failure", True)
     ]
     fields = "、".join(_text(result.get("field")) for result in failed if result.get("field"))
-    codes = "、".join(_text(result.get("failure_code")) for result in failed if result.get("failure_code"))
+    codes = "、".join(
+        _text(result.get("failure_code")) for result in failed if result.get("failure_code")
+    )
     return fields, codes
 
 
@@ -74,7 +75,10 @@ def _style_sheet(sheet, *, freeze: str = "A2") -> None:
         sheet.auto_filter.ref = sheet.dimensions
     for column in range(1, sheet.max_column + 1):
         longest = max(
-            (len(_text(sheet.cell(row=row, column=column).value)) for row in range(1, min(sheet.max_row, 150) + 1)),
+            (
+                len(_text(sheet.cell(row=row, column=column).value))
+                for row in range(1, min(sheet.max_row, 150) + 1)
+            ),
             default=8,
         )
         sheet.column_dimensions[get_column_letter(column)].width = min(max(longest + 2, 11), 42)
@@ -100,14 +104,37 @@ def build_machine_verification_excel(
     summary.append(["全量机器校验导出"])
     summary["A1"].font = _TITLE_FONT
     summary.merge_cells("A1:D1")
-    summary.append(["项目", _text(version.get("experiment_name")), "断言版本", f"V{version.get('version', '')}"])
-    summary.append(["断言基准", _text(baseline.get("name")), "匹配版本", _text(version.get("matching_version_id"))])
-    summary.append(["全量器物", report.get("total_artifacts", 0), "机器通过", report.get("full_pass_count", 0)])
-    summary.append(["机器错误", report.get("full_fail_count", 0), "机器不确定", report.get("full_uncertain_count", 0)])
-    summary.append(["样本数量", report.get("sample_count", 0), "人工已审核", report.get("reviewed_count", 0)])
-    summary.append(["错误覆盖率", report.get("error_coverage"), "断言精准率", report.get("error_precision")])
-    summary.append(["人机一致性", report.get("human_machine_alignment"), "人工复核负担", report.get("review_load")])
-    summary.append(["模型不可用条数", report.get("model_unavailable_count", 0), "机器任务 ID", _text((machine_run or {}).get("_id"))])
+    summary.append([
+        "项目", _text(version.get("experiment_name")), "断言版本", f"V{version.get('version', '')}"
+    ])
+    summary.append([
+        "断言基准", _text(baseline.get("name")),
+        "匹配版本", _text(version.get("matching_version_id")),
+    ])
+    summary.append([
+        "全量器物", report.get("total_artifacts", 0),
+        "机器通过", report.get("full_pass_count", 0),
+    ])
+    summary.append([
+        "机器错误", report.get("full_fail_count", 0),
+        "机器不确定", report.get("full_uncertain_count", 0),
+    ])
+    summary.append([
+        "样本数量", report.get("sample_count", 0),
+        "人工已审核", report.get("reviewed_count", 0),
+    ])
+    summary.append([
+        "错误覆盖率", report.get("error_coverage"),
+        "断言精准率", report.get("error_precision"),
+    ])
+    summary.append([
+        "人机一致性", report.get("human_machine_alignment"),
+        "人工复核负担", report.get("review_load"),
+    ])
+    summary.append([
+        "模型不可用条数", report.get("model_unavailable_count", 0),
+        "机器任务 ID", _text((machine_run or {}).get("_id")),
+    ])
     summary.append([])
     summary.append(["错误字段", "错误代码", "数量"])
     for item in report.get("field_error_distribution") or []:
@@ -123,7 +150,9 @@ def build_machine_verification_excel(
     summary.sheet_view.showGridLines = False
     for row in range(2, 10):
         for column in (2, 4):
-            summary.cell(row=row, column=column).alignment = Alignment(vertical="top", wrap_text=True)
+            summary.cell(row=row, column=column).alignment = Alignment(
+                vertical="top", wrap_text=True
+            )
 
     by_record_id = {str(record.get("_id")): record for record in records}
     details = workbook.create_sheet("全量校验明细")

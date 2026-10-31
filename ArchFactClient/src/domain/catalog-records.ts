@@ -212,3 +212,29 @@ export function groupCatalogRecordsByEntity(records: ExtractionRecord[]) {
     .sort((left, right) => left.index - right.index)
     .map((group) => group.record)
 }
+
+/**
+ * The card text representative can be a different page-level record than the
+ * drawing. Keep the representative, but retain the entity's selected crop for
+ * the collapsed catalog thumbnail.
+ */
+export function attachEntityThumbnails(
+  representatives: ExtractionRecord[],
+  sourceRecords: ExtractionRecord[],
+  entityThumbnails: Record<string, string>,
+) {
+  const siblingThumbnailByEntity = new Map<string, string>()
+  for (const record of sourceRecords) {
+    if (!record.entity_id || siblingThumbnailByEntity.has(record.entity_id)) continue
+    const regionId = record.thumbnail_region_id || record.primary_artifact_region_id
+    if (regionId) siblingThumbnailByEntity.set(record.entity_id, regionId)
+  }
+
+  return representatives.map((record) => {
+    if (record.thumbnail_region_id || !record.entity_id) return record
+    const regionId = record.primary_artifact_region_id
+      || entityThumbnails[record.entity_id]
+      || siblingThumbnailByEntity.get(record.entity_id)
+    return regionId ? { ...record, thumbnail_region_id: regionId } : record
+  })
+}

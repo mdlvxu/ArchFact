@@ -59,6 +59,23 @@ async def list_extraction_records(
     )
 
 
+@router.get(
+    "/{job_id}/entity-thumbnails",
+    response_model=ApiResponse[dict[str, str]],
+)
+async def list_extraction_entity_thumbnails(
+    job_id: str,
+    container: Annotated[Container, Depends(get_container)],
+) -> ApiResponse[dict[str, str]]:
+    await container.repository.get_job(job_id)
+    entities = await container.repository.list_job_entities(job_id)
+    return ApiResponse(data={
+        str(entity["_id"]): str(entity["thumbnail_region_id"])
+        for entity in entities
+        if entity.get("thumbnail_region_id")
+    })
+
+
 @router.patch(
     "/{job_id}/records/{record_id}/review",
     response_model=ApiResponse[ExtractionRecordView],

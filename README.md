@@ -105,11 +105,13 @@ Set-Location ..\ArchFactServer
 
 ## Operator workflow
 
-Open the app at `http://localhost:5173/`. The top-level workflow is **Data Extraction → Data Preview → Machine Verification**. Use the **中 / EN** switch in the upper-right corner at any time.
+Open the app at `http://localhost:5173/`. The navigation contains five pages: **Data Extraction, Data Preview, Machine Verification, GT Evaluation, and Data Insights**. Use the **中 / EN** switch in the upper-right corner at any time. Machine Verification and GT Evaluation both use a selected extraction run's fused results, but keep their rules, baselines, and result histories separate.
 
 All screenshots in this guide are stored in `ArchFactClient/docs/readme-images/` and correspond to the source images in the repository-root `图片流程/` folder.
 
 ### 1. Workflow overview
+
+![ArchFact workflow overview](ArchFactClient/docs/readme-images/workflow-overview-en.svg)
 
 ```text
 Import PDF → configure template, field prompts, and page range → start extraction
@@ -120,6 +122,10 @@ Import PDF → configure template, field prompts, and page range → start extra
   → AI calculates sample consistency from the human decisions and freezes V1
   → V2: LLM Assertions V2 + selected rules over the full card set, reusing the same 18 samples
   → inspect versions, compare metrics, and export JSON or Excel details
+
+Independent evaluation path: import a human-annotation Excel baseline for a report
+  → select a completed extraction run for that report → evaluate its fused artifact cards
+  → inspect item-by-item comparisons, logs, and history → export reports
 ```
 
 Machine verification counts only **deduplicated entity cards with a linked artifact crop**. Text-only provenance records, records without a crop, and repeated page-level records are retained in the project but are excluded from the full verification total and the 18-sample cohort.
@@ -214,3 +220,16 @@ The upper-right **Output** menu provides two files:
 | Full machine-verification details Excel | Per-card machine verdicts, reasons, field-level decisions, relation information, and summaries; suitable for manual review and delivery. |
 
 If a legacy page shows a different artifact count from an older screenshot, use the actual **Full Verification** count. It excludes text-only records without crops and deduplicates entities. Refresh Machine Verification to update an existing experiment's displayed count; PDF re-extraction is not required.
+
+### 9. GT Evaluation: compare fused cards with human annotations
+
+1. Open **GT Evaluation** and select a report. You can upload its PDF and import the human-annotation Excel baseline before extraction finishes. A baseline is imported once per report and can be inspected, along with its column mappings, under **Manage baselines**.
+2. During import, choose a worksheet and map the artifact key as either a **complete artifact ID** or **context ID + sequence**. Map only fields that have human annotations; unmapped fields are not scored as machine errors. If the report already has a baseline, the app prompts you to reuse it.
+3. Select a completed extraction run and the report's baseline, then click **Run evaluation**. The run evaluates that extraction's current fused artifact cards. Different extraction templates and updated matching versions can be evaluated separately. You can pause, resume, or terminate a running evaluation.
+4. Use **Overview** for ID matching and field agreement, **Item comparison** to search human and machine fields, and **Evaluation logs** for run details. Each evaluation and its logs are saved independently. Historical results can be viewed or exported. Exports include a human-left-join comparison report and a text-to-artifact-image table.
+
+GT Evaluation starts from human-annotation rows, matches normalized artifact IDs, and compares annotated fields. If the spreadsheet has no image bounding boxes or text-image relation labels, detection and relation metrics are unavailable. Whole-report recall is not calculated for partial-page extractions. Historical reports are view/export-only; they cannot start new evaluations.
+
+### 10. Data Insights
+
+Open **Data Insights** for artifact-card summaries and page-level distribution for the current extraction run. It is an exploration view, not a replacement for human review, Machine Verification, or GT Evaluation.

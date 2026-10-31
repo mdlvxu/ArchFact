@@ -8,6 +8,7 @@ from app.api.v1.extraction_jobs import router as extraction_jobs_router
 from app.api.v1.extraction_records import router as extraction_records_router
 from app.api.v1.gold_datasets import router as gold_datasets_router
 from app.api.v1.quality_evaluations import router as quality_evaluations_router
+from app.api.v1.recognition import router as recognition_router
 from app.api.v1.rematches import router as rematches_router
 from app.api.v1.verification import router as verification_router
 from app.core.hardware import hardware_status_payload
@@ -21,6 +22,7 @@ router.include_router(rematches_router)
 router.include_router(verification_router)
 router.include_router(gold_datasets_router)
 router.include_router(quality_evaluations_router)
+router.include_router(recognition_router)
 
 
 @router.get("/health", tags=["health"])

@@ -3,7 +3,6 @@ from app.domain.verification_sampling import (
     select_balanced_verification_sample,
 )
 
-
 DEFAULT_RULES = [
     {
         "id": 1,
@@ -152,7 +151,9 @@ def test_missing_pool_does_not_steal_from_the_other_side() -> None:
     assert selection.correct_pool_size == 5
     assert selection.incorrect_pool_size == 0
     assert selection.record_ids == [
-        record_id for record_id in selection.record_ids if selection.metadata[record_id]["expected_label"] == "correct"
+        record_id
+        for record_id in selection.record_ids
+        if selection.metadata[record_id]["expected_label"] == "correct"
     ]
     assert len(selection.record_ids) == 5
 

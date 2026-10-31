@@ -341,6 +341,8 @@ onBeforeUnmount(() => {
 
 .settings__header {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
   justify-content: space-between;
   padding: 0 8px 8px;
@@ -394,6 +396,8 @@ onBeforeUnmount(() => {
 .template-card__title,
 .range-card__title {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
   justify-content: space-between;
 }
@@ -447,7 +451,7 @@ onBeforeUnmount(() => {
 
 .constraint-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 6px 17px;
 }
 
@@ -485,6 +489,11 @@ onBeforeUnmount(() => {
   padding: 7px 8px;
   background: #fff;
   border-radius: 5px;
+}
+
+.rule-item > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .rule-item strong {

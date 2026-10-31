@@ -2,15 +2,32 @@ from __future__ import annotations
 
 from app.application.evidence import (
     _candidate_evidence_pages as candidate_evidence_pages,
+)
+from app.application.evidence import (
     _record_core_visual_region_ids as record_core_visual_region_ids,
+)
+from app.application.evidence import (
     _record_evidence_region_ids as record_evidence_region_ids,
+)
+from app.application.evidence import (
     _record_explicit_relation_ids as record_explicit_relation_ids,
+)
+from app.application.evidence import (
     _resolve_color_plate_pages as resolve_color_plate_pages,
+)
+from app.application.evidence import (
     _select_primary_text_evidence as select_primary_text_evidence,
+)
+from app.application.evidence import (
     _select_relevant_evidence_relations as select_relevant_evidence_relations,
 )
 from app.application.record_enrichment import enrich_records_with_paragraph_fields
-from app.application.views import build_entity_view, build_record_view, build_region_view, build_relation_view
+from app.application.views import (
+    build_entity_view,
+    build_record_view,
+    build_region_view,
+    build_relation_view,
+)
 from app.container import Container
 from app.models.schemas import RecordEvidenceContextView
 

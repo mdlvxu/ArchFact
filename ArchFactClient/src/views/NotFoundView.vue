@@ -14,9 +14,18 @@ function goHome() {
 <template>
   <!-- 404 页面：访问不存在的路由时展示 -->
   <div class="not-found">
-    <el-result icon="warning" title="404" :sub-title="t('notFound.message')">
+    <el-result
+      icon="warning"
+      title="404"
+      :sub-title="t('notFound.message')"
+    >
       <template #extra>
-        <el-button type="primary" @click="goHome">{{ t('notFound.home') }}</el-button>
+        <el-button
+          type="primary"
+          @click="goHome"
+        >
+          {{ t('notFound.home') }}
+        </el-button>
       </template>
     </el-result>
   </div>

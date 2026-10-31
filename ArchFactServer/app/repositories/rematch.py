@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
 from typing import Any
 from uuid import uuid4
 
-from pymongo import DESCENDING, ReplaceOne, ReturnDocument, UpdateOne
-from pymongo.errors import DuplicateKeyError
+from pymongo import DESCENDING, ReturnDocument
 
-from app.core.errors import ConflictError, DomainError, NotFoundError
-from app.domain.page_semantics import PageSemantics
-from app.domain.relations import relation_key
+from app.core.errors import ConflictError, NotFoundError
 from app.domain.time import utc_now
-from app.domain.verification_sampling import select_balanced_verification_sample
-from app.infrastructure.mongodb import MongoDatabase
+
 
 class RematchPersistence:
     """Rematch preview snapshots and apply/rollback."""
@@ -69,6 +63,11 @@ class RematchPersistence:
         if run is None:
             raise NotFoundError("重新匹配任务不存在")
         return run
+
+    async def is_job_rematch_applying(self, job_id: str) -> bool:
+        return await self._db.rematch_runs.find_one(
+            {"job_id": job_id, "status": "applying"}, {"_id": 1}
+        ) is not None
 
 
     async def update_rematch_run(self, rematch_id: str, **fields: Any) -> dict[str, Any]:
@@ -340,6 +339,12 @@ class RematchPersistence:
         )
         if active_verification is not None:
             raise ConflictError("请先完成当前人工核验，再应用新的匹配版本")
+        active_evaluation = await self._db.quality_evaluation_runs.find_one(
+            {"job_id": job_id, "status": {"$in": ["queued", "running", "paused"]}},
+            {"_id": 1},
+        )
+        if active_evaluation is not None:
+            raise ConflictError("当前 GT 评测尚未结束，请完成或终止后再应用匹配版本")
         job = await self.get_job(job_id)
         if job.get("active_matching_version_id", "M0") != run.get(
             "base_matching_version_id", "M0"

@@ -186,10 +186,12 @@ class VerificationPersistence:
                     )
                     if active_session is not None:
                         raise ConflictError(
-                            f"{active_experiment.get('name', '当前实验')} 的 V1 尚待完成 18 条人工审核与 AI 复核，不能新建实验基线"
+                            f"{active_experiment.get('name', '当前实验')} 的 V1 尚待完成 "
+                            "18 条人工审核与 AI 复核，不能新建实验基线"
                         )
                     raise ConflictError(
-                        f"{active_experiment.get('name', '当前实验')} 尚未生成完成的 V1 校验结果，不能新建实验基线"
+                        f"{active_experiment.get('name', '当前实验')} "
+                        "尚未生成完成的 V1 校验结果，不能新建实验基线"
                     )
         now = utc_now()
         count = await self._db.verification_experiments.count_documents({"job_id": job_id})

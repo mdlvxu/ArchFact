@@ -129,6 +129,13 @@ class ResultFusionService:
         r"|[\u4e00-\u9fff]{0,4}(?:闪玉|玉|石|青铜|铜|铁)"
         r")"
     )
+    _surface_color_lithology_pattern = re.compile(
+        r"(?P<color>(?:浅灰|深灰|青灰|灰褐|灰白|灰黑|黄褐|红褐|褐红|棕褐|浅褐|深褐|"
+        r"黑褐|浅红|深红|紫红|浅黄|深黄|淡黄|浅绿|深绿|灰绿|青绿|浅蓝|深蓝|"
+        r"灰|青|红|黄|褐|棕|黑|白|绿|蓝|紫)色)"
+        r"(?=(?:粉砂质|砂质|泥质|夹砂|夹炭)?"
+        r"(?:粉砂质泥岩|砂质泥岩|泥质泥岩|泥岩|粉砂岩|砂岩|页岩|灰岩|石英岩))"
+    )
     _strict_artifact_id_pattern = re.compile(
         r"^[A-Z]{1,6}\d+[A-Z]?(?::[A-Z]?\d+[A-Z]?)+$"
     )
@@ -1399,6 +1406,14 @@ class ResultFusionService:
                 and compact_current
                 and compact_candidate != compact_current
                 and compact_candidate in compact_current
+            ):
+                return True
+            if (
+                field_key == "morphological_description"
+                and compact_current
+                and compact_candidate
+                and compact_current in compact_candidate
+                and len(compact_candidate) > len(compact_current)
             ):
                 return True
         if not current:
@@ -2672,11 +2687,11 @@ class ResultFusionService:
             if texture_match.start() > 24:
                 texture = ""
 
-        morphology = working
-        if texture:
-            morphology = (
-                morphology[: texture_match.start()] + morphology[texture_match.end() :]
-            )
+        surface_color_match = cls._surface_color_lithology_pattern.search(remainder)
+
+        # Keep the complete artifact-specific description even when category
+        # and texture are also copied into their dedicated structured fields.
+        morphology = remainder
         morphology = morphology.strip(" ，,、:：;；。．.")
         morphology = re.sub(r"[、,，；;\s]{2,}", "，", morphology).strip("，,、;；")
 
@@ -2698,6 +2713,17 @@ class ResultFusionService:
                 raw_value=texture,
                 paragraph_regions=paragraph_regions,
                 quote=texture,
+                expected_identifier=expected_identifier,
+            )
+        if surface_color_match is not None:
+            surface_color = surface_color_match.group("color")
+            cls._fill_field_from_paragraph(
+                fields=fields,
+                field_key="surface_color",
+                value=surface_color,
+                raw_value=surface_color,
+                paragraph_regions=paragraph_regions,
+                quote=surface_color,
                 expected_identifier=expected_identifier,
             )
         if morphology and len(morphology) >= 2:

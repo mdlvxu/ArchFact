@@ -28,6 +28,86 @@ def test_record_card_fields_changed_detects_morphology_upgrade() -> None:
     assert record_card_fields_changed(after, after) is False
 
 
+def test_full_paragraph_can_upgrade_long_truncated_morphology() -> None:
+    assert ResultFusionService._should_upgrade_field_value(
+        field_key="morphological_description",
+        current_value="强风化，大部分受沁变白，片状，倒梯形",
+        candidate_value=(
+            "玉梳背。南瓜黄闪玉，强风化，大部分受沁变白，片状，倒梯形，"
+            "顶端中央凹缺并有穿孔"
+        ),
+        expected_identifier="M1:37",
+    ) is True
+
+
+def test_paragraph_splits_explicit_color_from_lithology_and_keeps_full_morphology() -> None:
+    missing = {"value": None, "raw_value": None, "status": "missing", "evidence": []}
+    record = {
+        "fields": {
+            "artifact_id": {"value": "M1:24", "raw_value": "M1:24", "status": "valid"},
+            "category": {"value": "石锛", "raw_value": "石锛", "status": "valid"},
+            "surface_color": dict(missing),
+            "morphological_description": dict(missing),
+        }
+    }
+    regions = [
+        {
+            "id": "m1-24-text",
+            "page": 124,
+            "kind": "text",
+            "bbox": [0.1, 0.2, 0.9, 0.23],
+            "text": "M1:24，石锛。灰色泥岩，疏松，似。破损严重。单面拓孔。",
+        }
+    ]
+
+    ResultFusionService._complete_paragraph_descriptive_fields(
+        record=record,
+        paragraph_regions=regions,
+        expected_identifier="M1:24",
+    )
+
+    assert record["fields"]["surface_color"]["value"] == "灰色"
+    morphology = record["fields"]["morphological_description"]["value"]
+    assert "灰色泥岩" in morphology
+    assert "疏松" in morphology
+    assert record["fields"]["surface_color"]["evidence"][0]["quote"] == "灰色"
+
+
+def test_paragraph_does_not_treat_mineral_color_as_surface_color() -> None:
+    record = {
+        "fields": {
+            "artifact_id": {"value": "M1:37", "raw_value": "M1:37", "status": "valid"},
+            "surface_color": {
+                "value": None, "raw_value": None,
+                "status": "missing", "evidence": [],
+            },
+            "morphological_description": {
+                "value": None,
+                "raw_value": None,
+                "status": "missing",
+                "evidence": [],
+            },
+        }
+    }
+    regions = [
+        {
+            "id": "m1-37-text",
+            "page": 137,
+            "kind": "text",
+            "bbox": [0.1, 0.2, 0.9, 0.23],
+            "text": "M1:37，肉红色，石英斑点浑圆状。",
+        }
+    ]
+
+    ResultFusionService._complete_paragraph_descriptive_fields(
+        record=record,
+        paragraph_regions=regions,
+        expected_identifier="M1:37",
+    )
+
+    assert record["fields"]["surface_color"]["value"] is None
+
+
 def test_enrich_records_persists_upgraded_morphology() -> None:
     class Repository:
         def __init__(self) -> None:
@@ -37,21 +117,30 @@ def test_enrich_records_persists_upgraded_morphology() -> None:
                     "_id": "m1-37-l1",
                     "page": 137,
                     "kind": "text",
-                    "text": "M1：37、玉梳背。南瓜黄闪玉，强风化，大部分受沁变白，局部尚存黄褐色原质。片状，",
+                    "text": (
+                        "M1：37、玉梳背。南瓜黄闪玉，强风化，"
+                        "大部分受沁变白，局部尚存黄褐色原质。片状，"
+                    ),
                     "bbox": [0.1367, 0.1169, 0.9167, 0.1312],
                 },
                 {
                     "_id": "m1-37-l2",
                     "page": 137,
                     "kind": "text",
-                    "text": "倒梯形、一面有线切割凹痕。顶端中央凹缺，缺口内作“弓”字形凸起，凸块下方有穿孔，",
+                    "text": (
+                        "倒梯形、一面有线切割凹痕。顶端中央凹缺，"
+                        "缺口内作“弓”字形凸起，凸块下方有穿孔，"
+                    ),
                     "bbox": [0.12, 0.1374, 0.92, 0.152],
                 },
                 {
                     "_id": "m1-37-l3",
                     "page": 137,
                     "kind": "text",
-                    "text": "双面钻。两侧边斜直，两下角弧切，底端有较宽的凸桦，上无穿孔。宽4.9、高3.7、厚0.4~0.6",
+                    "text": (
+                        "双面钻。两侧边斜直，两下角弧切，底端有较宽的凸桦，"
+                        "上无穿孔。宽4.9、高3.7、厚0.4~0.6"
+                    ),
                     "bbox": [0.12, 0.1627, 0.92, 0.177],
                 },
                 {
@@ -126,6 +215,10 @@ def test_enrich_records_persists_upgraded_morphology() -> None:
     assert persisted == 1
     assert "倒梯形" in record["fields"]["morphological_description"]["value"]
     assert "弓" in record["fields"]["morphological_description"]["value"]
+    assert "玉梳背" in record["fields"]["morphological_description"]["value"]
+    assert "南瓜黄闪玉" in record["fields"]["morphological_description"]["value"]
+    assert "强风化" in record["fields"]["morphological_description"]["value"]
+    assert "南瓜黄闪玉" in record["fields"]["texture"]["value"]
     assert "长 8" not in record["fields"]["measurements"]["value"]
     assert "直径 1.1" not in record["fields"]["measurements"]["value"]
     assert record["paragraph_enrichment_version"] == ResultFusionService.version

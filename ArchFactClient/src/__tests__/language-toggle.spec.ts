@@ -5,6 +5,7 @@ import LanguageToggle from '@/components/business/LanguageToggle.vue'
 import {
   localizeProcessingLog,
   localizeKnownText,
+  localizeTemplateName,
   setLocale,
   translate,
 } from '@/i18n'
@@ -42,6 +43,15 @@ describe('界面语言切换', () => {
     expect(translate('nav.inputPdf')).toBe('导入 PDF')
     expect(localizeKnownText(businessData.template.name)).toBe('基础研究模板')
     expect(businessData).toEqual(snapshot)
+  })
+
+  it('按语言显示新旧提取模板名称，保留自定义名称', () => {
+    setLocale('zh-CN')
+    expect(localizeTemplateName('Latest Artifact Card Template')).toBe('最新器物卡片提取模板')
+    expect(localizeTemplateName('Basic Research Template')).toBe('基础研究模板')
+    setLocale('en-US')
+    expect(localizeTemplateName('基础研究模板')).toBe('Basic Research Template')
+    expect(localizeTemplateName('自定义模板')).toBe('自定义模板')
   })
 
   it('在英文界面本地化已保存的后端处理日志，不改写原始日志', () => {

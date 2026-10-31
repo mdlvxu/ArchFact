@@ -1048,6 +1048,22 @@ class ExtractionService:
                         crop_count = sum(
                             bool(region.get("crop_object_key")) for region in processed_regions
                         )
+                        crop_errors = [
+                            str(region["crop_error"])
+                            for region in processed_regions
+                            if region.get("crop_error")
+                        ]
+                        if crop_errors:
+                            message = (
+                                f"{len(crop_errors)} 个检测区域裁剪图保存失败："
+                                f"{crop_errors[0]}"
+                            )
+                            page_issues.append(
+                                self._page_issue(page_no, "image_detection", "warning", message)
+                            )
+                            await self._repository.append_event(
+                                job_id, "WARNING", f"第 {page_no} 页{message}"
+                            )
                         if crop_count:
                             await self._repository.append_event(
                                 job_id,

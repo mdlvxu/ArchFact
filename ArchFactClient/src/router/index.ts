@@ -1,14 +1,39 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
-// 路由配置：页面级组件统一放在 views 目录
+const workspaceRoute = () => import('@/views/HomeView.vue')
+
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',
-      name: 'home',
-      component: () => import('@/views/HomeView.vue'),
-      meta: { title: '首页' },
+      name: 'extraction',
+      component: workspaceRoute,
+      meta: { title: '数据提取', workspaceTab: 'Data Extraction' },
+    },
+    {
+      path: '/preview',
+      name: 'preview',
+      component: workspaceRoute,
+      meta: { title: '数据预览', workspaceTab: 'Data Preview' },
+    },
+    {
+      path: '/machine-verification',
+      name: 'machine-verification',
+      component: workspaceRoute,
+      meta: { title: '机器校验', workspaceTab: 'Machine Verification' },
+    },
+    {
+      path: '/gt-evaluation',
+      name: 'gt-evaluation',
+      component: workspaceRoute,
+      meta: { title: 'GT 评测', workspaceTab: 'Cross-report Evaluation' },
+    },
+    {
+      path: '/insights',
+      name: 'insights',
+      component: workspaceRoute,
+      meta: { title: '数据洞察', workspaceTab: 'Data Insights' },
     },
     {
       path: '/:pathMatch(.*)*',

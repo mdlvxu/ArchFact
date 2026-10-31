@@ -218,7 +218,9 @@ onBeforeUnmount(() => globalThis.removeEventListener('resize', updateVirtualView
           <header>
             <div>
               <span>{{ t('range.eyebrow') }}</span>
-              <h2 id="page-range-title">{{ t('range.title') }}</h2>
+              <h2 id="page-range-title">
+                {{ t('range.title') }}
+              </h2>
             </div>
             <b>{{ t('common.pages', { count: pages.length }) }}</b>
           </header>
@@ -256,8 +258,15 @@ onBeforeUnmount(() => globalThis.removeEventListener('resize', updateVirtualView
                         :src="item.thumbnailUrl"
                         :alt="`PDF ${t('common.page', { page: item.page })}`"
                       >
-                      <span v-else class="page-selection-placeholder" aria-hidden="true">
-                        <i v-for="line in 7" :key="line" />
+                      <span
+                        v-else
+                        class="page-selection-placeholder"
+                        aria-hidden="true"
+                      >
+                        <i
+                          v-for="line in 7"
+                          :key="line"
+                        />
                       </span>
                       <b v-if="selectedPageSet.has(item.page)">✓</b>
                     </span>
@@ -267,7 +276,10 @@ onBeforeUnmount(() => globalThis.removeEventListener('resize', updateVirtualView
               </div>
             </div>
 
-            <div v-else class="page-range-empty">
+            <div
+              v-else
+              class="page-range-empty"
+            >
               <span>PDF</span>
               <h3>{{ t('range.noPages') }}</h3>
               <p>{{ t('range.uploadFirst') }}</p>
@@ -277,18 +289,42 @@ onBeforeUnmount(() => globalThis.removeEventListener('resize', updateVirtualView
               <section>
                 <h3>{{ t('range.quickActions') }}</h3>
                 <div class="quick-action-grid">
-                  <button type="button" :disabled="!pages.length" @click="selectAll">{{ t('range.selectAll') }}</button>
-                  <button type="button" :disabled="!pages.length" @click="clearSelection">{{ t('range.clear') }}</button>
-                  <button type="button" :disabled="!pages.length" @click="invertSelection">{{ t('range.invert') }}</button>
+                  <button
+                    type="button"
+                    :disabled="!pages.length"
+                    @click="selectAll"
+                  >
+                    {{ t('range.selectAll') }}
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="!pages.length"
+                    @click="clearSelection"
+                  >
+                    {{ t('range.clear') }}
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="!pages.length"
+                    @click="invertSelection"
+                  >
+                    {{ t('range.invert') }}
+                  </button>
                   <select
                     v-model="parityMode"
                     :disabled="!pages.length"
                     :aria-label="t('range.oddEven')"
                     @change="applyParity"
                   >
-                    <option value="">{{ t('range.oddEven') }}</option>
-                    <option value="odd">{{ t('range.odd') }}</option>
-                    <option value="even">{{ t('range.even') }}</option>
+                    <option value="">
+                      {{ t('range.oddEven') }}
+                    </option>
+                    <option value="odd">
+                      {{ t('range.odd') }}
+                    </option>
+                    <option value="even">
+                      {{ t('range.even') }}
+                    </option>
                   </select>
                 </div>
               </section>
@@ -313,7 +349,10 @@ onBeforeUnmount(() => globalThis.removeEventListener('resize', updateVirtualView
                   </button>
                 </div>
                 <p>{{ t('range.formatHint') }}</p>
-                <strong v-if="rangeError" role="alert">{{ rangeError }}</strong>
+                <strong
+                  v-if="rangeError"
+                  role="alert"
+                >{{ rangeError }}</strong>
               </section>
 
               <div class="selected-page-count">
@@ -322,7 +361,12 @@ onBeforeUnmount(() => globalThis.removeEventListener('resize', updateVirtualView
               </div>
 
               <footer>
-                <button type="button" @click="closeDialog">{{ t('common.cancel') }}</button>
+                <button
+                  type="button"
+                  @click="closeDialog"
+                >
+                  {{ t('common.cancel') }}
+                </button>
                 <button
                   type="button"
                   class="confirm-pages-button"
@@ -708,7 +752,7 @@ onBeforeUnmount(() => globalThis.removeEventListener('resize', updateVirtualView
   transform: translateY(12px) scale(0.98);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .page-range-backdrop {
     padding: 10px;
   }

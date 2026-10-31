@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
 from typing import Any
 from uuid import uuid4
 
-from pymongo import DESCENDING, ReplaceOne, ReturnDocument, UpdateOne
+from pymongo import DESCENDING
 from pymongo.errors import DuplicateKeyError
 
-from app.core.errors import ConflictError, DomainError, NotFoundError
-from app.domain.page_semantics import PageSemantics
-from app.domain.relations import relation_key
+from app.core.errors import NotFoundError
 from app.domain.time import utc_now
-from app.domain.verification_sampling import select_balanced_verification_sample
-from app.infrastructure.mongodb import MongoDatabase
 
 _ACTIVE_EXTRACTION_STATUSES = [
     "queued",
@@ -134,7 +128,22 @@ class JobPersistence:
         document_id: str | None = None,
         *,
         include_active: bool = False,
+        filename_contains: str | None = None,
+        prefer_verified: bool = False,
     ) -> dict[str, Any] | None:
+        document_ids: list[str] | None = None
+        if filename_contains:
+            import re
+
+            documents = await self._db.documents.find(
+                {"filename": {"$regex": re.escape(filename_contains), "$options": "i"}},
+                {"_id": 1},
+            ).to_list(length=10000)
+            document_ids = [str(item["_id"]) for item in documents]
+            if not document_ids:
+                return None
+            if document_id and document_id not in document_ids:
+                return None
         if include_active:
             active_query: dict[str, Any] = {
                 "status": {"$in": _ACTIVE_EXTRACTION_STATUSES},
@@ -142,6 +151,8 @@ class JobPersistence:
             }
             if document_id:
                 active_query["document_id"] = document_id
+            elif document_ids is not None:
+                active_query["document_id"] = {"$in": document_ids}
             active = await self._db.extraction_jobs.find_one(
                 active_query,
                 sort=[("updated_at", DESCENDING), ("created_at", DESCENDING)],
@@ -154,10 +165,54 @@ class JobPersistence:
         }
         if document_id:
             query["document_id"] = document_id
+        elif document_ids is not None:
+            query["document_id"] = {"$in": document_ids}
+        if prefer_verified:
+            versions = await self._db.verification_versions.find(
+                {"version": {"$gte": 2}}, {"job_id": 1}
+            ).to_list(length=10000)
+            verified_ids = list({item["job_id"] for item in versions if item.get("job_id")})
+            if verified_ids:
+                verified = await self._db.extraction_jobs.find_one(
+                    {**query, "_id": {"$in": verified_ids}},
+                    sort=[("updated_at", DESCENDING), ("created_at", DESCENDING)],
+                )
+                if verified is not None:
+                    return verified
         return await self._db.extraction_jobs.find_one(
             query,
             sort=[("updated_at", DESCENDING), ("created_at", DESCENDING)],
         )
+
+
+    async def list_jobs_for_document(
+        self,
+        document_id: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        cursor = self._db.extraction_jobs.find(
+            {"document_id": document_id},
+            {"_id": 1, "document_id": 1, "status": 1, "created_at": 1, "updated_at": 1,
+             "completed_at": 1, "config": 1, "active_matching_version_id": 1},
+        ).sort("created_at", DESCENDING)
+        return await cursor.to_list(length=max(1, min(limit, 200)))
+
+
+    async def list_recent_completed_jobs(self, limit: int = 500) -> list[dict[str, Any]]:
+        cursor = self._db.extraction_jobs.find(
+            {"status": {"$in": ["completed", "completed_with_warnings"]}},
+            {"_id": 1, "document_id": 1, "status": 1, "created_at": 1,
+             "completed_at": 1, "config": 1, "active_matching_version_id": 1},
+        ).sort("created_at", DESCENDING)
+        jobs = await cursor.to_list(length=max(1, min(limit, 500)))
+        document_ids = list({job["document_id"] for job in jobs if job.get("document_id")})
+        documents = await self._db.documents.find(
+            {"_id": {"$in": document_ids}}, {"_id": 1, "filename": 1}
+        ).to_list(length=len(document_ids)) if document_ids else []
+        filenames = {item["_id"]: item.get("filename", "") for item in documents}
+        for job in jobs:
+            job["document_filename"] = filenames.get(job.get("document_id"), "")
+        return jobs
 
 
     async def update_job(self, job_id: str, **fields: Any) -> None:

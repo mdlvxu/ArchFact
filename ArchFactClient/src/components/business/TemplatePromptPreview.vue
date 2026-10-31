@@ -12,6 +12,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  template: undefined,
   systemPromptRevision: 0,
 })
 const { t, localize } = useI18n()
@@ -133,11 +134,20 @@ watch(
       </div>
       <div class="template-prompt-preview__actions">
         <span class="template-prompt-preview__template">{{ selectedTemplate ? localize(selectedTemplate.name) : '—' }}</span>
-        <button type="button" :disabled="!preview" @click="copyPrompt">{{ t('settings.copyPrompt') }}</button>
+        <button
+          type="button"
+          :disabled="!preview"
+          @click="copyPrompt"
+        >
+          {{ t('settings.copyPrompt') }}
+        </button>
       </div>
     </header>
 
-    <div v-if="failed && !preview" class="template-prompt-preview__status template-prompt-preview__status--error">
+    <div
+      v-if="failed && !preview"
+      class="template-prompt-preview__status template-prompt-preview__status--error"
+    >
       {{ t('settings.promptPreviewFailed') }}
     </div>
     <template v-else-if="preview">
@@ -145,19 +155,30 @@ watch(
         {{ t('settings.approxTokens', { count: preview.estimated_tokens }) }}
         <span v-if="loading">· {{ t('common.loading') }}</span>
       </div>
-      <el-collapse class="template-prompt-preview__collapse" :model-value="['composed']">
-        <el-collapse-item name="composed" :title="t('settings.composedPrompt')">
+      <el-collapse
+        class="template-prompt-preview__collapse"
+        :model-value="['composed']"
+      >
+        <el-collapse-item
+          name="composed"
+          :title="t('settings.composedPrompt')"
+        >
           <pre>{{ preview.composed_prompt }}</pre>
         </el-collapse-item>
       </el-collapse>
     </template>
-    <div v-else class="template-prompt-preview__status">{{ t('common.loading') }}</div>
+    <div
+      v-else
+      class="template-prompt-preview__status"
+    >
+      {{ t('common.loading') }}
+    </div>
   </section>
 </template>
 
 <style scoped lang="scss">
 .template-prompt-preview { padding: 14px 16px; margin: 0 0 16px; background: rgb(255 255 255 / 76%); border: 1px solid #eadfd4; border-radius: 9px; box-shadow: 0 2px 7px rgb(84 55 34 / 6%); }
-.template-prompt-preview header, .template-prompt-preview__actions { display: flex; gap: 9px; align-items: center; }
+.template-prompt-preview header, .template-prompt-preview__actions { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; min-width: 0; }
 .template-prompt-preview header { justify-content: space-between; }
 .template-prompt-preview h3 { margin: 0 0 3px; }
 .template-prompt-preview small { color: #897568; }
@@ -171,5 +192,5 @@ watch(
 .template-prompt-preview__collapse { margin-top: 3px; border-top: 0; border-bottom: 0; }
 .template-prompt-preview__collapse :deep(.el-collapse-item__header) { height: 34px; color: #5b4637; background: transparent; border-bottom-color: #eee1d5; }
 .template-prompt-preview__collapse :deep(.el-collapse-item__wrap) { background: transparent; border-bottom-color: #eee1d5; }
-.template-prompt-preview pre { max-height: 295px; padding: 10px; margin: 4px 0 9px; overflow: auto; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; color: #54483f; background: #fffdfb; border: 1px solid #eee0d4; border-radius: 7px; }
+.template-prompt-preview pre { max-height: 295px; padding: 10px; margin: 4px 0 9px; overflow: auto; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: #54483f; background: #fffdfb; border: 1px solid #eee0d4; border-radius: 7px; }
 </style>

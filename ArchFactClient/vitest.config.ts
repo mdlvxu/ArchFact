@@ -8,7 +8,8 @@ export default mergeConfig(
   defineConfig({
     test: {
       environment: 'jsdom',
-      exclude: [...configDefaults.exclude, 'dist/**'],
+      exclude: [...configDefaults.exclude, 'dist/**', 'output/**'],
+      server: { deps: { inline: ['element-plus'] } },
     },
     resolve: {
       alias: {

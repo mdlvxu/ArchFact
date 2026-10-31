@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from '@/i18n'
+import { displayMatchingVersion } from '@/domain/matching-version'
 import type { VerificationVersion } from '@/types/verification'
 
 interface Props {
@@ -113,7 +114,9 @@ function displayVersionText(value: string) {
             </p>
 
             <div class="version-metadata">
-              <span>{{ t('version.matching') }} {{ version.matchingVersionId || 'M0' }}</span>
+              <span v-if="displayMatchingVersion(version.matchingVersionId)">
+                {{ t('version.matching') }} {{ displayMatchingVersion(version.matchingVersionId) }}
+              </span>
               <span
                 v-if="version.relationChangedCount"
                 class="version-meta--warning"
@@ -170,6 +173,7 @@ function displayVersionText(value: string) {
 
 <style scoped lang="scss">
 .version-history {
+  container: version-history / inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -422,7 +426,7 @@ function displayVersionText(value: string) {
   transform: translate(-50%, -50%);
 }
 
-@media (max-width: 1280px) {
+@container version-history (max-width: 400px) {
   .version-history > h3 {
     font-size: 19px;
   }

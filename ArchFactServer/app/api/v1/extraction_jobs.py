@@ -39,13 +39,61 @@ async def create_extraction_job(
 async def get_latest_completed_extraction_job(
     container: Annotated[Container, Depends(get_container)],
     document_id: Annotated[str | None, Query()] = None,
+    filename_contains: Annotated[str | None, Query(max_length=100)] = None,
+    prefer_verified: Annotated[bool, Query()] = False,
     include_active: Annotated[bool, Query()] = False,
 ) -> ApiResponse[ExtractionJobView | None]:
     job = await container.repository.get_latest_completed_job(
         document_id=document_id,
+        filename_contains=filename_contains,
+        prefer_verified=prefer_verified,
         include_active=include_active,
     )
     return ApiResponse(data=await build_job_view(container, job) if job else None)
+
+
+@router.get("/history", response_model=ApiResponse[list[dict]])
+async def list_recent_completed_extraction_jobs(
+    container: Annotated[Container, Depends(get_container)],
+) -> ApiResponse[list[dict]]:
+    jobs = await container.repository.list_recent_completed_jobs()
+    return ApiResponse(
+        data=[
+            {
+                "job_id": job["_id"],
+                "document_id": job["document_id"],
+                "document_filename": job.get("document_filename", ""),
+                "status": job.get("status", "unknown"),
+                "created_at": job.get("created_at"),
+                "completed_at": job.get("completed_at"),
+                "template_name": (job.get("config") or {}).get("template_name", ""),
+                "matching_version_id": job.get("active_matching_version_id", "M0"),
+            }
+            for job in jobs
+        ]
+    )
+
+
+@router.get("", response_model=ApiResponse[list[dict]])
+async def list_document_extraction_jobs(
+    document_id: Annotated[str, Query(min_length=1, max_length=120)],
+    container: Annotated[Container, Depends(get_container)],
+) -> ApiResponse[list[dict]]:
+    jobs = await container.repository.list_jobs_for_document(document_id)
+    return ApiResponse(
+        data=[
+            {
+                "job_id": job["_id"],
+                "document_id": job["document_id"],
+                "status": job.get("status", "unknown"),
+                "created_at": job.get("created_at"),
+                "completed_at": job.get("completed_at"),
+                "template_name": (job.get("config") or {}).get("template_name", ""),
+                "matching_version_id": job.get("active_matching_version_id", "M0"),
+            }
+            for job in jobs
+        ]
+    )
 
 
 @router.get("/{job_id}", response_model=ApiResponse[ExtractionJobView])

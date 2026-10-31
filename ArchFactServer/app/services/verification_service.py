@@ -739,7 +739,9 @@ class VerificationService:
             uncertain_count = sum(item["verdict"] == "uncertain" for item in results)
             unavailable_items = [item for item in results if item.get("model_unavailable")]
             unavailable_count = len(unavailable_items)
-            unavailable_reason = str(unavailable_items[0].get("reason", ""))[:1000] if unavailable_items else None
+            unavailable_reason = (
+                str(unavailable_items[0].get("reason", ""))[:1000] if unavailable_items else None
+            )
             run = await self._repository.update_machine_verification_run(
                 run_id,
                 pass_count=pass_count,
@@ -756,7 +758,8 @@ class VerificationService:
                 raise DomainError(
                     "模型校验服务不可用："
                     f"{unavailable_count}/{total} 条器物未获得模型判断。"
-                    "本次结果未生成 18 条人工样本或校验版本；请检查模型账号、余额或服务连接后重新执行。"
+                    "本次结果未生成 18 条人工样本或校验版本；"
+                    "请检查模型账号、余额或服务连接后重新执行。"
                 )
             if run.get("mode") == "initial":
                 session = await self._repository.create_initial_session_from_machine_run(

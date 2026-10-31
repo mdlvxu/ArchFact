@@ -98,7 +98,9 @@ function fieldWidth(count: number) {
 
       <section class="summary-section distribution-section">
         <h3>{{ t('summary.distribution') }}</h3>
-        <p class="distribution-hint">{{ t('summary.distributionHint') }}</p>
+        <p class="distribution-hint">
+          {{ t('summary.distributionHint') }}
+        </p>
         <div class="distribution-list">
           <div
             v-for="field in report.fields"
@@ -119,6 +121,7 @@ function fieldWidth(count: number) {
 
 <style scoped lang="scss">
 .verification-summary {
+  container: verification-summary / inline-size;
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -152,6 +155,8 @@ function fieldWidth(count: number) {
 
 .section-heading {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 15px;
@@ -178,6 +183,16 @@ function fieldWidth(count: number) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.alignment-metrics dt {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.alignment-metrics dd {
+  flex-shrink: 0;
 }
 
 .alignment-metrics dt,
@@ -196,6 +211,8 @@ function fieldWidth(count: number) {
 .result-total {
   display: grid;
   place-items: center;
+  min-width: 0;
+  text-align: center;
 }
 
 .result-total strong {
@@ -320,6 +337,7 @@ function fieldWidth(count: number) {
   text-align: center;
   background: rgb(255 252 248 / 72%);
   backdrop-filter: blur(2px);
+  padding: 16px;
 }
 
 .verification-overlay > span {
@@ -348,7 +366,7 @@ function fieldWidth(count: number) {
   }
 }
 
-@media (max-width: 1280px) {
+@container verification-summary (max-width: 500px) {
   .section-heading h3,
   .distribution-section h3 {
     font-size: 19px;
@@ -361,7 +379,8 @@ function fieldWidth(count: number) {
   }
 
   .distribution-row {
-    grid-template-columns: minmax(110px, 0.8fr) minmax(100px, 1.2fr) 30px;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr) 30px;
+    gap: 8px;
   }
 
   .distribution-row > span,
@@ -372,5 +391,13 @@ function fieldWidth(count: number) {
   .verification-alerts {
     grid-template-columns: 1fr;
   }
+
+  .result-totals {
+    gap: 8px;
+    padding-inline: 0;
+  }
+
+  .result-total strong { font-size: 32px; }
+  .result-total span { font-size: 16px; overflow-wrap: anywhere; }
 }
 </style>

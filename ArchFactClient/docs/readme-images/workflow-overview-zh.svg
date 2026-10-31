@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="760" viewBox="0 0 1600 760" role="img" aria-labelledby="title desc">
+  <title id="title">ArchFact 工作流总览</title>
+  <desc id="desc">PDF 导入、双通道提取、关系匹配、融合存储和数据预览后，分别进入机器校验、GT 评测和数据洞察。</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1"><stop stop-color="#fffaf5"/><stop offset="1" stop-color="#f3e9df"/></linearGradient>
+    <linearGradient id="copper" x2="1" y2="1"><stop stop-color="#cb7a37"/><stop offset="1" stop-color="#93400d"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#775a43" flood-opacity=".13"/></filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#a96839"/></marker>
+    <style>
+      text{font-family:"Microsoft YaHei","Noto Sans CJK SC","Segoe UI",sans-serif;fill:#292f32}
+      .title{font-size:34px;font-weight:700}.subtitle{font-size:17px;fill:#77685c}
+      .step{font-size:22px;font-weight:700}.detail{font-size:16px;fill:#72665d}
+      .number{font-size:17px;font-weight:700;fill:#fff}.branch-title{font-size:23px;font-weight:700}
+      .branch-detail{font-size:16px;fill:#665d55}.channel{font-size:15px;font-weight:600}
+      .card{fill:#fff;stroke:#ead9ca;stroke-width:1.5;filter:url(#shadow)}
+      .connector{fill:none;stroke:#a96839;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+      .icon-blue{fill:none;stroke:#406b89;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+      .icon-copper{fill:none;stroke:#a96839;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+      .icon-green{fill:none;stroke:#3b8567;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+  <rect width="1600" height="760" fill="url(#background)"/>
+  <circle cx="1575" cy="-45" r="155" fill="#eddbc9" opacity=".5"/>
+  <circle cx="25" cy="780" r="150" fill="#f0dcc8" opacity=".5"/>
+  <text x="60" y="62" class="title">从考古报告到可追溯器物数据</text>
+  <text x="60" y="93" class="subtitle">一次提取形成融合卡片；机器校验、人工基准评测与数据洞察各自独立使用结果</text>
+
+  <rect class="card" x="50" y="142" width="240" height="275" rx="22"/>
+  <rect class="card" x="365" y="142" width="240" height="275" rx="22"/>
+  <rect class="card" x="680" y="142" width="240" height="275" rx="22"/>
+  <rect class="card" x="995" y="142" width="240" height="275" rx="22"/>
+  <rect class="card" x="1310" y="142" width="240" height="275" rx="22"/>
+  <path class="connector" d="M294 280H353" marker-end="url(#arrow)"/>
+  <path class="connector" d="M609 280H668" marker-end="url(#arrow)"/>
+  <path class="connector" d="M924 280H983" marker-end="url(#arrow)"/>
+  <path class="connector" d="M1239 280H1298" marker-end="url(#arrow)"/>
+
+  <circle cx="85" cy="178" r="23" fill="url(#copper)"/><text x="85" y="184" text-anchor="middle" class="number">01</text>
+  <path class="icon-copper" d="M122 235h67l19 19v64h-86z M189 235v20h19 M137 272h53 M137 287h43 M137 302h32"/>
+  <text x="170" y="354" text-anchor="middle" class="step">导入 PDF</text>
+  <text x="170" y="384" text-anchor="middle" class="detail">选择报告与提取模板</text>
+  <text x="170" y="405" text-anchor="middle" class="detail">设置页码范围</text>
+
+  <circle cx="400" cy="178" r="23" fill="url(#copper)"/><text x="400" y="184" text-anchor="middle" class="number">02</text>
+  <rect x="391" y="220" width="188" height="44" rx="10" fill="#ebf4fa" stroke="#8cb3cf"/>
+  <text x="485" y="249" text-anchor="middle" class="channel" fill="#245a7c">文字层 / OCR → LLM</text>
+  <rect x="391" y="274" width="188" height="44" rx="10" fill="#fff2e7" stroke="#e0aa78"/>
+  <text x="485" y="303" text-anchor="middle" class="channel" fill="#a4561b">PDF 图像 → YOLO</text>
+  <text x="485" y="354" text-anchor="middle" class="step">双通道提取</text>
+  <text x="485" y="384" text-anchor="middle" class="detail">文本字段与器物裁剪图</text>
+
+  <circle cx="715" cy="178" r="23" fill="url(#copper)"/><text x="715" y="184" text-anchor="middle" class="number">03</text>
+  <path class="icon-blue" d="M775 232 844 272 775 313 M844 272 872 232 M844 272 872 313"/>
+  <circle cx="775" cy="232" r="12" fill="#eff7f1" stroke="#4b9671" stroke-width="3"/>
+  <circle cx="775" cy="313" r="12" fill="#eff7f1" stroke="#4b9671" stroke-width="3"/>
+  <circle cx="844" cy="272" r="12" fill="#fff3e7" stroke="#c47b31" stroke-width="3"/>
+  <circle cx="872" cy="232" r="12" fill="#eff5fb" stroke="#5b8daf" stroke-width="3"/>
+  <circle cx="872" cy="313" r="12" fill="#eff5fb" stroke="#5b8daf" stroke-width="3"/>
+  <text x="800" y="354" text-anchor="middle" class="step">关系匹配</text>
+  <text x="800" y="384" text-anchor="middle" class="detail">编号、原文、线图</text>
+  <text x="800" y="405" text-anchor="middle" class="detail">裁剪图与彩图关联</text>
+
+  <circle cx="1030" cy="178" r="23" fill="url(#copper)"/><text x="1030" y="184" text-anchor="middle" class="number">04</text>
+  <ellipse class="icon-green" cx="1115" cy="236" rx="58" ry="19"/>
+  <path class="icon-green" d="M1057 236v69c0 12 26 19 58 19s58-7 58-19v-69 M1057 270c0 12 26 19 58 19s58-7 58-19"/>
+  <text x="1115" y="354" text-anchor="middle" class="step">融合与存储</text>
+  <text x="1115" y="384" text-anchor="middle" class="detail">器物实体、证据与关系</text>
+  <text x="1115" y="405" text-anchor="middle" class="detail">按提取任务保存</text>
+
+  <circle cx="1345" cy="178" r="23" fill="url(#copper)"/><text x="1345" y="184" text-anchor="middle" class="number">05</text>
+  <path class="icon-blue" d="M1384 228h92v91h-92z M1401 249h58 M1401 269h45 M1401 289h53"/>
+  <circle cx="1465" cy="307" r="16" fill="#f8efe7" stroke="#bb6b34" stroke-width="2"/>
+  <path class="icon-copper" d="m1458 307 5 5 9-11"/>
+  <text x="1430" y="354" text-anchor="middle" class="step">数据预览</text>
+  <text x="1430" y="384" text-anchor="middle" class="detail">卡片、原文与关联证据</text>
+  <text x="1430" y="405" text-anchor="middle" class="detail">查看关系版本</text>
+
+  <path class="connector" d="M1430 421v47H295 M1430 468H1305"/>
+  <path class="connector" d="M295 468v37" marker-end="url(#arrow)"/>
+  <path class="connector" d="M800 468v37" marker-end="url(#arrow)"/>
+  <path class="connector" d="M1305 468v37" marker-end="url(#arrow)"/>
+
+  <rect class="card" x="60" y="518" width="470" height="180" rx="20"/>
+  <rect class="card" x="565" y="518" width="470" height="180" rx="20"/>
+  <rect class="card" x="1070" y="518" width="470" height="180" rx="20"/>
+  <circle cx="101" cy="558" r="22" fill="url(#copper)"/><text x="101" y="564" text-anchor="middle" class="number">06</text>
+  <text x="139" y="566" class="branch-title">机器校验</text>
+  <text x="88" y="606" class="branch-detail">LLM 断言 V1 / V2 + 所选规则，全量核验器物卡片</text>
+  <text x="88" y="633" class="branch-detail">固定 18 条人工样本，计算人机一致性</text>
+  <rect x="88" y="651" width="202" height="28" rx="14" fill="#fff0e4"/>
+  <text x="189" y="670" text-anchor="middle" font-size="14" fill="#975018">版本历史 · JSON / Excel</text>
+
+  <circle cx="606" cy="558" r="22" fill="url(#copper)"/><text x="606" y="564" text-anchor="middle" class="number">07</text>
+  <text x="644" y="566" class="branch-title">GT 评测</text>
+  <text x="593" y="606" class="branch-detail">一次导入人工标注 Excel，复用到同报告不同提取任务</text>
+  <text x="593" y="633" class="branch-detail">按器物编号匹配，逐字段对照融合结果</text>
+  <rect x="593" y="651" width="221" height="28" rx="14" fill="#eaf5ef"/>
+  <text x="704" y="670" text-anchor="middle" font-size="14" fill="#367654">评测日志 · 左外关联报告</text>
+
+  <circle cx="1111" cy="558" r="22" fill="url(#copper)"/><text x="1111" y="564" text-anchor="middle" class="number">08</text>
+  <text x="1149" y="566" class="branch-title">数据洞察</text>
+  <text x="1098" y="606" class="branch-detail">统计当前任务的器物、类别和页码分布</text>
+  <text x="1098" y="633" class="branch-detail">辅助浏览与定位，不替代校验或 GT 评测</text>
+  <rect x="1098" y="651" width="186" height="28" rx="14" fill="#eaf2f8"/>
+  <text x="1191" y="670" text-anchor="middle" font-size="14" fill="#356684">任务级结果概览</text>
+</svg>

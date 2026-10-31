@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.ocr_engine import OcrPageInput, TesseractOcrEngine
-from app.services.page_preprocessor import ocr_config_hash
 from app.services.paddle_ocr_worker import (
     _box,
     _detect_api_version,
@@ -18,6 +17,7 @@ from app.services.paddle_ocr_worker import (
     _v3_ocr_kwargs,
     bundled_ocr_model_dir,
 )
+from app.services.page_preprocessor import ocr_config_hash
 
 
 def test_detect_api_version_auto_and_override() -> None:
@@ -131,7 +131,10 @@ def test_paddle_worker_ready_handshake_before_recognize(
                 "    sys.stdout.write(json.dumps({",
                 "        'ok': True,",
                 "        'page_no': request.get('page_no'),",
-                "        'blocks': [{'text': 'M1', 'confidence': 0.99, 'bbox_px': [1, 2, 10, 20]}],",
+                (
+                    "        'blocks': [{'text': 'M1', 'confidence': 0.99, "
+                    "'bbox_px': [1, 2, 10, 20]}],"
+                ),
                 "    }) + '\\n')",
                 "    sys.stdout.flush()",
             ]

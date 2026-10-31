@@ -8,16 +8,21 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AppShell: typeof import('./../components/layout/AppShell.vue')['default']
     ArchaeologicalCatalogs: typeof import('./../components/business/ArchaeologicalCatalogs.vue')['default']
     AssertionRules: typeof import('./../components/business/AssertionRules.vue')['default']
     ContentPreview: typeof import('./../components/business/ContentPreview.vue')['default']
+    CrossReportEvaluationWorkspace: typeof import('./../components/business/CrossReportEvaluationWorkspace.vue')['default']
+    DataInsightsWorkspace: typeof import('./../components/business/DataInsightsWorkspace.vue')['default']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCollapse: typeof import('element-plus/es')['ElCollapse']
     ElCollapseItem: typeof import('element-plus/es')['ElCollapseItem']
+    ElDialog: typeof import('element-plus/es')['ElDialog']
     ElDropdown: typeof import('element-plus/es')['ElDropdown']
     ElDropdownItem: typeof import('element-plus/es')['ElDropdownItem']
     ElDropdownMenu: typeof import('element-plus/es')['ElDropdownMenu']
     ElIcon: typeof import('element-plus/es')['ElIcon']
+    ElInput: typeof import('element-plus/es')['ElInput']
     ElOption: typeof import('element-plus/es')['ElOption']
     ElProgress: typeof import('element-plus/es')['ElProgress']
     ElResult: typeof import('element-plus/es')['ElResult']

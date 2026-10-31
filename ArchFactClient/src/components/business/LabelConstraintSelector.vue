@@ -100,7 +100,10 @@ onBeforeUnmount(closeMenu)
     :title="t('constraint.editPrompt')"
     @click="toggleMenu"
   >
-    <svg viewBox="0 0 20 20" aria-hidden="true">
+    <svg
+      viewBox="0 0 20 20"
+      aria-hidden="true"
+    >
       <path d="m4 14.8 1.1-3.7L13.7 2.5a1.8 1.8 0 0 1 2.5 2.5l-8.6 8.6L4 14.8Z" />
       <path d="m11.9 4.3 2.5 2.5M4 14.8l3.6-1.2" />
     </svg>
@@ -145,16 +148,30 @@ onBeforeUnmount(closeMenu)
             <small>{{ t('constraint.promptLength', { count: instructionDraft.length, max: 1200, tokens: estimatedTokens(instructionDraft) }) }}</small>
           </label>
           <footer class="constraint-details__actions">
-            <button type="button" :disabled="!defaultInstruction" @click="restoreDefaultInstruction">
+            <button
+              type="button"
+              :disabled="!defaultInstruction"
+              @click="restoreDefaultInstruction"
+            >
               {{ t('constraint.defaultPrompt') }}
             </button>
             <div>
-              <button type="button" @click="closeMenu">{{ t('common.cancel') }}</button>
-              <button type="button" class="constraint-details__save" @click="saveInstruction">{{ t('constraint.savePrompt') }}</button>
+              <button
+                type="button"
+                @click="closeMenu"
+              >
+                {{ t('common.cancel') }}
+              </button>
+              <button
+                type="button"
+                class="constraint-details__save"
+                @click="saveInstruction"
+              >
+                {{ t('constraint.savePrompt') }}
+              </button>
             </div>
           </footer>
         </div>
-
       </section>
     </div>
   </Teleport>
@@ -206,9 +223,10 @@ onBeforeUnmount(closeMenu)
   position: fixed;
   z-index: 3000;
   width: 360px;
+  max-width: calc(100vw - 24px);
   max-height: calc(100vh - 24px);
   padding: 0;
-  overflow: hidden;
+  overflow-y: auto;
   color: #332f2c;
   background: #fffcf8;
   border: 1px solid #e5d4c2;
@@ -250,9 +268,10 @@ onBeforeUnmount(closeMenu)
 .constraint-instruction textarea:focus { border-color: #bd6535; box-shadow: 0 0 0 3px rgb(189 101 53 / 10%); }
 .constraint-instruction small { font-size: 11px; color: #967d6a; text-align: right; }
 
-.constraint-details__actions, .constraint-details__actions > div { display: flex; gap: 8px; align-items: center; }
+.constraint-details__actions, .constraint-details__actions > div { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .constraint-details__actions { justify-content: space-between; }
 .constraint-details__actions button {
+  flex-shrink: 0;
   min-height: 30px;
   padding: 0 10px;
   font-size: 12px;

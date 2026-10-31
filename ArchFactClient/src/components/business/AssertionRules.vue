@@ -41,7 +41,7 @@ function updateRule(ruleId: number, changes: Partial<VerificationRule>) {
 }
 
 function toggleRule(rule: VerificationRule) {
-  updateRule(rule.id, { enabled: !rule.enabled, updated: true })
+  updateRule(rule.id, { enabled: !rule.enabled })
 }
 
 function removeRule(ruleId: number) {
@@ -136,7 +136,10 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
           :disabled="viewOnly || running || (!paused && (!baselineId || !rules.some((rule) => rule.enabled)))"
           @click="paused ? emit('resume') : emit('execute')"
         >
-          <span v-if="running" class="execute-spinner" />
+          <span
+            v-if="running"
+            class="execute-spinner"
+          />
           {{ running ? t('verification.executing') : (paused ? t('verification.resume') : t('verification.execute')) }}
         </button>
       </div>
@@ -180,7 +183,10 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
             :disabled="viewOnly"
             @click="openEditDialog(rule)"
           >
-            <svg viewBox="0 0 20 20" aria-hidden="true">
+            <svg
+              viewBox="0 0 20 20"
+              aria-hidden="true"
+            >
               <path d="m4 14-1 4 4-1L17 7l-3-3zM12.5 5.5l3 3" />
             </svg>
           </button>
@@ -190,7 +196,10 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
             :disabled="viewOnly"
             @click="removeRule(rule.id)"
           >
-            <svg viewBox="0 0 20 20" aria-hidden="true">
+            <svg
+              viewBox="0 0 20 20"
+              aria-hidden="true"
+            >
               <path d="M4 6h12M8 3h4l1 3H7zM6 6l1 11h6l1-11M9 9v5M11 9v5" />
             </svg>
           </button>
@@ -235,10 +244,17 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
 
 .assertion-header {
   display: flex;
+  flex-wrap: wrap;
   flex: 0 0 auto;
+  gap: 12px;
   align-items: center;
   justify-content: space-between;
   padding: 0 2px 12px;
+}
+
+.assertion-header > :first-child {
+  flex: 1 1 240px;
+  min-width: 0;
 }
 
 .assertion-header h2 {
@@ -255,6 +271,7 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
 
 .baseline-picker {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
   margin-top: 8px;
@@ -305,8 +322,15 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
 
 .assertion-actions {
   display: flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   gap: 8px;
   align-items: center;
+}
+
+.assertion-actions button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .pause-button {
@@ -446,6 +470,7 @@ async function saveRule(draft: Pick<VerificationRule, 'title' | 'description'>) 
 
 .rule-content {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .rule-title {

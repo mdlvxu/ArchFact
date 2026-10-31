@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 import unicodedata
 from collections import defaultdict
-from datetime import UTC, datetime
+from decimal import Decimal
 from difflib import SequenceMatcher
 from typing import Any
 
+from app.core.config import Settings
 from app.core.errors import ConflictError, DomainError
-from app.domain.identifiers import normalize_identifier
+from app.domain.identifiers import clean_value, normalize_identifier, normalize_report_name
 from app.domain.time import utc_now
 from app.infrastructure.task_dispatcher import LocalJobDispatcher
 from app.repositories.mongo_repository import MongoRepository
+from app.services.gold_dataset_service import baseline_lock
+from app.services.quality_catalog import preview_field_value, select_preview_cards
+from app.services.quality_semantics import SEMANTIC_FIELDS, score_semantic_pairs
 
 FIELD_LABELS = {
     "artifact_id": "器物编号",
@@ -51,16 +56,31 @@ def record_artifact_id(record: dict[str, Any]) -> str:
     return normalize_identifier(candidate)
 
 
-def compact_text(value: Any) -> str:
-    if value is None:
-        return ""
-    text = unicodedata.normalize("NFKC", str(value)).lower()
-    text = (
-        text.replace("厘米", "cm")
-        .replace("公分", "cm")
-        .replace("毫米", "mm")
-        .replace("米", "m")
+def linked_color_plate_region_id(
+    record: dict[str, Any],
+    region_by_id: dict[str, dict[str, Any]],
+    relation_by_id: dict[str, dict[str, Any]],
+) -> str | None:
+    region_ids = [str(value) for value in record.get("region_ids") or []]
+    for relation_id in record.get("relation_ids") or []:
+        relation = relation_by_id.get(str(relation_id))
+        if relation:
+            region_ids.extend(str(relation.get(key) or "") for key in (
+                "source_region_id", "target_region_id"
+            ))
+    return next(
+        (region_id for region_id in region_ids
+         if region_by_id.get(region_id, {}).get("kind") == "color_plate"),
+        None,
     )
+
+
+def compact_text(value: Any) -> str:
+    cleaned = clean_value(value)
+    if cleaned is None:
+        return ""
+    text = unicodedata.normalize("NFKC", cleaned).lower()
+    text = text.replace("厘米", "cm").replace("公分", "cm").replace("毫米", "mm").replace("米", "m")
     return re.sub(r"[^0-9a-z\u4e00-\u9fff.]+", "", text)
 
 
@@ -81,30 +101,86 @@ def text_similarity(actual: Any, expected: Any) -> float:
 def _measurement_tokens(value: Any) -> set[str]:
     text = unicodedata.normalize("NFKC", str(value or "")).lower()
     text = text.replace("厘米", "cm").replace("公分", "cm").replace("毫米", "mm")
-    return {
-        f"{number.rstrip('0').rstrip('.')}{unit}"
+    tokens = set()
+    for number, unit in re.findall(r"(\d+(?:\.\d+)?)\s*(cm|mm|m)?", text):
+        amount = Decimal(number)
+        if unit == "mm":
+            amount /= 10
+            unit = "cm"
+        elif unit == "m":
+            amount *= 100
+            unit = "cm"
+        tokens.add(f"{amount.normalize()}{unit}")
+    return tokens
+
+
+def _measurement_values(value: Any) -> list[tuple[Decimal, str | None]]:
+    text = unicodedata.normalize("NFKC", str(value or "")).lower()
+    text = text.replace("厘米", "cm").replace("公分", "cm").replace("毫米", "mm")
+    return [
+        (Decimal(number), unit or None)
         for number, unit in re.findall(r"(\d+(?:\.\d+)?)\s*(cm|mm|m)?", text)
-        if number
+    ]
+
+
+def _measurement_overlap(expected: Any, actual: Any) -> float:
+    expected_values = _measurement_values(expected)
+    actual_values = _measurement_values(actual)
+    if not expected_values:
+        return 0.0
+    matched_actual: set[int] = set()
+    matched = 0
+    for expected_value, expected_unit in expected_values:
+        for index, (actual_value, actual_unit) in enumerate(actual_values):
+            if index in matched_actual:
+                continue
+            if expected_unit and actual_unit:
+                expected_token = _measurement_tokens(f"{expected_value}{expected_unit}")
+                actual_token = _measurement_tokens(f"{actual_value}{actual_unit}")
+                equal = expected_token == actual_token
+            else:
+                equal = expected_value == actual_value
+            if equal:
+                matched_actual.add(index)
+                matched += 1
+                break
+    return matched / len(expected_values)
+
+
+def _figure_reference_tokens(value: Any) -> set[str]:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = re.sub(r"\s+", "", text).replace("：", ":").replace("，", ",")
+    return {
+        match.group(0).casefold()
+        for match in re.finditer(
+            r"(?:图|彩版|彩图|图版|figure|fig\.?|plate)"
+            r"[一二三四五六七八九十百〇零0-9A-Za-z-]+(?:[,.:][一二三四五六七八九十百〇零0-9A-Za-z-]+)*",
+            text,
+            re.IGNORECASE,
+        )
     }
 
 
 def compare_field(key: str, actual: Any, expected: Any) -> dict[str, Any]:
     actual_text, expected_text = compact_text(actual), compact_text(expected)
     if not expected_text:
-        verdict = "extra" if actual_text else "not_applicable"
-        score = 1.0 if not actual_text else 0.0
+        # The baseline is sparse; an unannotated field is not a negative label.
+        verdict, score = "not_applicable", 0.0
     elif not actual_text:
         verdict, score = "missing", 0.0
     elif key == "measurements":
-        expected_tokens = _measurement_tokens(expected)
-        actual_tokens = _measurement_tokens(actual)
-        if expected_tokens:
-            overlap = len(expected_tokens & actual_tokens) / len(expected_tokens)
+        if _measurement_values(expected):
+            overlap = _measurement_overlap(expected, actual)
             score = overlap
             verdict = "matched" if math.isclose(overlap, 1.0) else "mismatched"
         else:
             score = text_similarity(actual, expected)
             verdict = "matched" if score >= 0.9 else "mismatched"
+    elif key == "figure_caption" and _figure_reference_tokens(expected):
+        expected_tokens = _figure_reference_tokens(expected)
+        actual_tokens = _figure_reference_tokens(actual)
+        score = len(expected_tokens & actual_tokens) / len(expected_tokens)
+        verdict = "matched" if math.isclose(score, 1.0) else "mismatched"
     else:
         score = text_similarity(actual, expected)
         threshold = 1.0 if key == "artifact_id" else 0.85
@@ -181,9 +257,52 @@ class QualityEvaluationService:
         *,
         repository: MongoRepository,
         dispatcher: LocalJobDispatcher,
+        settings: Settings | None = None,
     ) -> None:
         self._repository = repository
         self._dispatcher = dispatcher
+        self._settings = settings
+        self._control_locks: dict[str, asyncio.Lock] = {}
+
+    def _control_lock(self, run_id: str) -> asyncio.Lock:
+        return self._control_locks.setdefault(run_id, asyncio.Lock())
+
+    async def control(self, job_id: str, run_id: str, action: str) -> dict[str, Any]:
+        async with self._control_lock(run_id):
+            run = await self._repository.get_quality_evaluation_run(
+                job_id=job_id, evaluation_id=run_id
+            )
+            transitions = {
+                "pause": ({"queued", "running"}, "paused", "已暂停评测；已发出的请求可能继续完成"),
+                "resume": ({"paused"}, "running", "已继续评测"),
+                "terminate": (
+                    {"queued", "running", "paused"}, "terminated", "评测已终止，可重新开始",
+                ),
+            }
+            allowed, state, message = transitions[action]
+            if run["status"] not in allowed:
+                raise ConflictError("当前评测状态不支持此操作")
+            fields: dict[str, Any] = {
+                "status": state,
+                "logs": [*run.get("logs", []), {
+                    "at": utc_now().isoformat(), "stage": state, "message": message,
+                }],
+            }
+            if action == "terminate":
+                fields["completed_at"] = utc_now()
+            updated = await self._repository.update_quality_evaluation_run(run_id, **fields)
+        if action == "terminate":
+            await self._dispatcher.cancel(run_id)
+        return updated
+
+    async def _checkpoint(self, run_id: str) -> None:
+        while True:
+            run = await self._repository.get_quality_evaluation_run_by_id(run_id)
+            if run["status"] == "terminated":
+                raise asyncio.CancelledError()
+            if run["status"] != "paused":
+                return
+            await asyncio.sleep(0.25)
 
     async def create(
         self,
@@ -194,48 +313,127 @@ class QualityEvaluationService:
         job = await self._repository.get_job(job_id)
         if job.get("status") not in {"completed", "completed_with_warnings"}:
             raise ConflictError("抽取任务完成后才能执行质量评测")
+        if await self._repository.is_job_rematch_applying(job_id):
+            raise ConflictError("正在应用新的融合结果，请完成后再发起 GT 评测")
+        document = await self._repository.get_document(job["document_id"])
+        report_key = normalize_report_name(document.get("filename", ""))
         dataset = (
             await self._repository.get_gold_dataset(gold_dataset_id)
             if gold_dataset_id
-            else await self._repository.get_gold_dataset_for_document(
-                document_id=job["document_id"]
+            else next(
+                (
+                    candidate
+                    for candidate in await self._repository.list_gold_datasets()
+                    if candidate.get("status") == "ready"
+                    and normalize_report_name(candidate.get("document_filename", "")) == report_key
+                ),
+                None,
             )
         )
-        if dataset is None or dataset.get("document_id") != job.get("document_id"):
+        if (
+            not report_key
+            or dataset is None
+            or dataset.get("status") != "ready"
+            or normalize_report_name(dataset.get("document_filename", "")) != report_key
+        ):
             raise DomainError("当前 PDF 尚未绑定可用的人工标注数据")
-        run = await self._repository.create_quality_evaluation_run(
-            job_id=job_id,
-            document_id=job["document_id"],
-            dataset_id=dataset["_id"],
-            dataset_version=dataset.get("version", ""),
-            matching_version_id=job.get("active_matching_version_id", "M0"),
-        )
+        async with baseline_lock(dataset["_id"]):
+            dataset = await self._repository.get_gold_dataset(dataset["_id"])
+            if dataset.get("status") != "ready":
+                raise DomainError("当前 PDF 尚未绑定可用的人工标注数据")
+            run = await self._repository.create_quality_evaluation_run(
+                job_id=job_id,
+                document_id=job["document_id"],
+                dataset_id=dataset["_id"],
+                dataset_version=dataset.get("version", ""),
+                matching_version_id=job.get("active_matching_version_id", "M0"),
+                template_name=(job.get("config") or {}).get("template_name", ""),
+                semantic_model=(
+                    self._settings.verification_llm_model or self._settings.llm_model
+                    if self._settings else ""
+                ),
+            )
         await self._dispatcher.dispatch(run["_id"])
         return run
 
     async def run(self, run_id: str) -> None:
         run: dict[str, Any] | None = None
         try:
-            run = await self._repository.update_quality_evaluation_run(
-                run_id,
-                status="running",
-                progress={"current": 0, "total": 5, "percent": 0, "stage": "loading"},
-                error=None,
-            )
+            while True:
+                await self._checkpoint(run_id)
+                async with self._control_lock(run_id):
+                    current = await self._repository.get_quality_evaluation_run_by_id(run_id)
+                    if current["status"] == "paused":
+                        continue
+                    if current["status"] == "terminated":
+                        raise asyncio.CancelledError()
+                    run = await self._repository.update_quality_evaluation_run(
+                        run_id, status="running",
+                        progress={"current": 0, "total": 5, "percent": 0, "stage": "loading"},
+                        error=None, logs=[*current.get("logs", []), {
+                            "at": utc_now().isoformat(), "stage": "running",
+                            "message": "开始加载人工基准与融合卡片",
+                        }],
+                    )
+                    break
             job = await self._repository.get_job(run["job_id"])
+            if await self._repository.is_job_rematch_applying(run["job_id"]):
+                raise ConflictError("正在应用新的融合结果，请完成后再发起 GT 评测")
+            if job.get("active_matching_version_id", "M0") != run.get("matching_version_id", "M0"):
+                raise ConflictError("融合结果已更新，请基于最新匹配版本重新发起 GT 评测")
             document = await self._repository.get_document(run["document_id"])
-            records = await self._repository.list_job_records(run["job_id"])
-            gold_records = await self._repository.list_gold_records(run["dataset_id"])
+            dataset = await self._repository.get_gold_dataset(run["dataset_id"])
+            stored_records = await self._repository.list_job_records(run["job_id"])
             regions = await self._repository.list_job_regions(run["job_id"])
             relations = await self._repository.list_job_relations(run["job_id"])
+            region_by_id = {str(region["_id"]): region for region in regions}
+            relation_by_id = {str(relation["_id"]): relation for relation in relations}
+            crop_by_entity = {
+                str(record["entity_id"]): (
+                    record.get("primary_artifact_region_id")
+                    or record.get("thumbnail_region_id")
+                )
+                for record in stored_records
+                if record.get("entity_id") and (
+                    record.get("primary_artifact_region_id")
+                    or record.get("thumbnail_region_id")
+                )
+            }
+            plate_by_entity = {
+                str(record["entity_id"]): plate_id
+                for record in stored_records
+                if record.get("entity_id")
+                for plate_id in [linked_color_plate_region_id(record, region_by_id, relation_by_id)]
+                if plate_id
+            }
+            records = [
+                {
+                    **record,
+                    "evaluation_crop_region_id": (
+                        record.get("primary_artifact_region_id")
+                        or record.get("thumbnail_region_id")
+                        or crop_by_entity.get(str(record.get("entity_id")))
+                    ),
+                    "evaluation_plate_region_id": (
+                        linked_color_plate_region_id(record, region_by_id, relation_by_id)
+                        or plate_by_entity.get(str(record.get("entity_id")))
+                    ),
+                }
+                for record in select_preview_cards(stored_records)
+            ]
+            gold_records = await self._repository.list_gold_records(run["dataset_id"])
             gold_regions = await self._repository.list_gold_regions(run["dataset_id"])
             gold_links = await self._repository.list_gold_links(run["dataset_id"])
             pages = await self._repository.list_document_pages(run["document_id"])
-            await self._progress(run_id, 1, "matching_records")
+            await self._progress(
+                run_id, 1, "matching_records",
+                f"已加载 {len(gold_records)} 条人工标注与 {len(records)} 张最终融合卡片",
+            )
 
             result = self._evaluate(
                 job=job,
                 document=document,
+                dataset=dataset,
                 records=records,
                 gold_records=gold_records,
                 regions=regions,
@@ -244,34 +442,157 @@ class QualityEvaluationService:
                 gold_links=gold_links,
                 pages=pages,
             )
+            await self._progress(run_id, 2, "semantic_comparison")
+            semantic_count = await self._score_free_text(result, run_id=run_id)
+            await self._progress(
+                run_id, 3, "semantic_completed",
+                f"语义模型已评测 {semantic_count} 组自由文本字段",
+            )
             await self._progress(run_id, 4, "saving")
-            await self._repository.replace_quality_evaluation_items(
-                run_id=run_id,
-                job_id=run["job_id"],
-                items=result.pop("items"),
-            )
-            await self._repository.update_quality_evaluation_run(
-                run_id,
-                status="completed",
-                completed_at=utc_now(),
-                progress={"current": 5, "total": 5, "percent": 100, "stage": "completed"},
-                **result,
-            )
+            while True:
+                await self._checkpoint(run_id)
+                async with self._control_lock(run_id):
+                    latest = await self._repository.get_quality_evaluation_run_by_id(run_id)
+                    if latest["status"] == "paused":
+                        continue
+                    if latest["status"] == "terminated":
+                        raise asyncio.CancelledError()
+                    current_job = await self._repository.get_job(run["job_id"])
+                    if current_job.get("active_matching_version_id", "M0") != run.get(
+                        "matching_version_id", "M0"
+                    ):
+                        raise ConflictError("融合结果已更新，本次 GT 评测无效；请重新发起评测")
+                    await self._repository.replace_quality_evaluation_items(
+                        run_id=run_id, job_id=run["job_id"], items=result.pop("items"),
+                    )
+                    await self._repository.update_quality_evaluation_run(
+                        run_id,
+                        status="completed",
+                        completed_at=utc_now(),
+                        progress={"current": 5, "total": 5, "percent": 100, "stage": "completed"},
+                        logs=[
+                            *latest.get("logs", []),
+                            {
+                                "at": utc_now().isoformat(),
+                                "stage": "completed",
+                                "message": "评测结果与逐条明细已保存",
+                            },
+                        ],
+                        **result,
+                    )
+                    break
         except Exception as exc:
             if run is not None:
+                async with self._control_lock(run_id):
+                    latest = await self._repository.get_quality_evaluation_run_by_id(run_id)
+                    if latest["status"] == "terminated":
+                        return
+                    await self._repository.update_quality_evaluation_run(
+                        run_id,
+                        status="failed",
+                        error=str(exc)[:1000],
+                        completed_at=utc_now(),
+                        progress={"current": 5, "total": 5, "percent": 100, "stage": "failed"},
+                        logs=[
+                            *latest.get("logs", []),
+                            {
+                                "at": utc_now().isoformat(), "stage": "failed",
+                                "message": str(exc)[:500],
+                            },
+                        ],
+                    )
+
+    async def _progress(
+        self, run_id: str, current: int, stage: str, message: str | None = None
+    ) -> None:
+        labels = {
+            "matching_records": "按人工标注主键关联最终融合卡片",
+            "semantic_comparison": "计算自由文本语义一致度",
+            "saving": "保存评测明细",
+        }
+        while True:
+            await self._checkpoint(run_id)
+            async with self._control_lock(run_id):
+                run = await self._repository.get_quality_evaluation_run_by_id(run_id)
+                if run["status"] == "paused":
+                    continue
+                if run["status"] == "terminated":
+                    raise asyncio.CancelledError()
                 await self._repository.update_quality_evaluation_run(
                     run_id,
-                    status="failed",
-                    error=str(exc)[:1000],
-                    completed_at=utc_now(),
-                    progress={"current": 5, "total": 5, "percent": 100, "stage": "failed"},
+                    progress={
+                        "current": current, "total": 5, "percent": current * 20, "stage": stage,
+                    },
+                    logs=[*run.get("logs", []), {
+                        "at": utc_now().isoformat(), "stage": stage,
+                        "message": message or labels.get(stage, stage),
+                    }],
                 )
+                return
 
-    async def _progress(self, run_id: str, current: int, stage: str) -> None:
-        await self._repository.update_quality_evaluation_run(
-            run_id,
-            progress={"current": current, "total": 5, "percent": current * 20, "stage": stage},
+    async def _score_free_text(self, result: dict[str, Any], *, run_id: str | None = None) -> int:
+        pairs: list[dict[str, Any]] = []
+        for item in result["items"]:
+            if item["match_status"] != "matched":
+                continue
+            for field in item["field_results"]:
+                if (
+                    field["key"] in SEMANTIC_FIELDS
+                    and compact_text(field["actual"])
+                    and compact_text(field["expected"])
+                ):
+                    pairs.append(
+                        {
+                            "id": f"{item['gold_record_id']}:{field['key']}",
+                            "machine": str(field["actual"])[:1200],
+                            "human": str(field["expected"])[:1200],
+                        }
+                    )
+        if not pairs:
+            return 0
+        if self._settings is None:
+            raise DomainError("语义评测配置不存在")
+        if run_id:
+            judgments = await score_semantic_pairs(
+                self._settings, pairs, checkpoint=lambda: self._checkpoint(run_id),
+            )
+        else:
+            judgments = await score_semantic_pairs(self._settings, pairs)
+        for item in result["items"]:
+            for field in item["field_results"]:
+                pair_id = f"{item['gold_record_id']}:{field['key']}"
+                if pair_id not in judgments:
+                    continue
+                judgment = judgments[pair_id]
+                field["verdict"] = "matched" if judgment["matched"] else "mismatched"
+                field["score"] = round(float(judgment["score"]), 4)
+                field["method"] = "semantic_llm"
+                field["reason"] = str(judgment.get("reason") or "")[:500]
+        for metric in result["field_metrics"]:
+            if metric["key"] not in SEMANTIC_FIELDS:
+                continue
+            fields = [
+                field
+                for item in result["items"]
+                for field in item["field_results"]
+                if field["key"] == metric["key"]
+                and field["verdict"] not in {"not_applicable", "not_evaluated"}
+            ]
+            metric["evaluated"] = len(fields)
+            metric["matched"] = sum(field["verdict"] == "matched" for field in fields)
+            metric["missing"] = sum(field["verdict"] == "missing" for field in fields)
+            metric["mismatched"] = sum(field["verdict"] == "mismatched" for field in fields)
+            metric["extra"] = sum(field["verdict"] == "extra" for field in fields)
+            metric["score"] = (
+                round(sum(field["score"] for field in fields) / len(fields), 4) if fields else None
+            )
+        scores = [
+            metric["score"] for metric in result["field_metrics"] if metric["score"] is not None
+        ]
+        result["summary"]["field_macro_score"] = (
+            round(sum(scores) / len(scores), 4) if scores else None
         )
+        return len(pairs)
 
     @staticmethod
     def _evaluate(
@@ -285,11 +606,17 @@ class QualityEvaluationService:
         gold_regions: list[dict[str, Any]],
         gold_links: list[dict[str, Any]],
         pages: list[dict[str, Any]],
+        dataset: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         gold_by_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for gold in gold_records:
             if gold.get("canonical_artifact_id"):
                 gold_by_id[str(gold["canonical_artifact_id"])].append(gold)
+        predicted_by_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for record in records:
+            identifier = record_artifact_id(record)
+            if identifier:
+                predicted_by_id[identifier].append(record)
 
         region_by_id = {str(region["_id"]): region for region in regions}
         relation_by_id = {str(relation["_id"]): relation for relation in relations}
@@ -316,54 +643,81 @@ class QualityEvaluationService:
             key: {"key": key, "label": FIELD_LABELS[key], "evaluated": 0, "matched": 0}
             for key in OCR_ANCHOR_FIELDS
         }
-        relation_totals = {
-            "artifact_crop": {"evaluated": 0, "matched": 0},
-            "color_plate": {"evaluated": 0, "matched": 0},
-            "evidence_chain": {"evaluated": 0, "matched": 0},
-        }
+        capabilities = (dataset or {}).get("capabilities", {})
+        has_detection_labels = capabilities.get("has_detection_labels", bool(gold_regions))
+        has_relation_labels = capabilities.get("has_relation_labels", bool(gold_links))
+        relation_totals = (
+            {
+                "artifact_crop": {"evaluated": 0, "matched": 0},
+                "color_plate": {"evaluated": 0, "matched": 0},
+                "evidence_chain": {"evaluated": 0, "matched": 0},
+            }
+            if has_relation_labels
+            else {}
+        )
         items: list[dict[str, Any]] = []
         matched_gold_ids: set[str] = set()
         unmatched_predicted: list[str] = []
         ambiguous: list[str] = []
-        predicted_id_counts: dict[str, int] = defaultdict(int)
-        for record in records:
-            identifier = record_artifact_id(record)
-            if identifier:
-                predicted_id_counts[identifier] += 1
+        unmatched_predicted = [
+            record_artifact_id(record) or str(record.get("_id"))
+            for record in records
+            if record_artifact_id(record) not in gold_by_id
+        ]
 
-        for record in records:
-            artifact_id = record_artifact_id(record)
-            matches = gold_by_id.get(artifact_id, []) if artifact_id else []
+        # Human-left join: every annotated row produces exactly one saved item.
+        # Duplicate keys remain visible but are never force-paired by row order.
+        for gold in gold_records:
+            artifact_id = str(gold.get("canonical_artifact_id") or "")
+            matches = predicted_by_id.get(artifact_id, [])
             match_status = "matched"
-            if artifact_id and predicted_id_counts[artifact_id] > 1:
+            if len(matches) > 1 or len(gold_by_id.get(artifact_id, [])) > 1:
                 match_status = "ambiguous"
                 ambiguous.append(artifact_id)
             elif not matches:
                 match_status = "not_found"
-                unmatched_predicted.append(artifact_id or str(record.get("_id")))
-            elif len(matches) > 1:
-                match_status = "ambiguous"
-                ambiguous.append(artifact_id)
             if match_status != "matched":
+                unscored_fields = [
+                    {
+                        "key": key,
+                        "label": FIELD_LABELS[key],
+                        "verdict": "not_evaluated",
+                        "score": None,
+                        "exact": False,
+                        "actual": None,
+                        "expected": gold.get("fields", {}).get(key),
+                    }
+                    for key in FIELD_LABELS
+                    if clean_value(gold.get("fields", {}).get(key)) is not None
+                ]
                 items.append(
                     {
-                        "record_id": str(record.get("_id")),
+                        "record_id": str(matches[0].get("_id")) if len(matches) == 1 else "",
+                        "crop_region_id": (
+                            matches[0].get("evaluation_crop_region_id")
+                            if len(matches) == 1 else None
+                        ),
+                        "color_plate_region_id": (
+                            matches[0].get("evaluation_plate_region_id")
+                            if len(matches) == 1 else None
+                        ),
                         "artifact_id": artifact_id,
-                        "gold_record_id": None,
+                        "gold_record_id": str(gold["_id"]),
                         "match_status": match_status,
-                        "source_pages": record.get("source_pages", []),
-                        "field_results": [],
+                        "source_pages": matches[0].get("source_pages", [])
+                        if len(matches) == 1
+                        else [],
+                        "field_results": unscored_fields,
                         "ocr_results": [],
                         "relation_results": [],
                     }
                 )
                 continue
-
-            gold = matches[0]
+            record = matches[0]
             matched_gold_ids.add(str(gold["_id"]))
             field_results: list[dict[str, Any]] = []
             for key in FIELD_LABELS:
-                actual = artifact_id if key == "artifact_id" else extracted_field_value(record, key)
+                actual = artifact_id if key == "artifact_id" else preview_field_value(record, key)
                 expected = gold.get("fields", {}).get(key)
                 comparison = compare_field(key, actual, expected)
                 field_results.append(comparison)
@@ -422,33 +776,36 @@ class QualityEvaluationService:
             valid_relation_count = sum(
                 str(value) in relation_by_id for value in record.get("relation_ids", [])
             )
-            record_gold_links = gold_links_by_record[str(gold["_id"])]
-            expects_artifact = any(
-                link.get("link_type") == "artifact_crop" for link in record_gold_links
-            )
-            expects_plate = any(
-                link.get("link_type") == "color_plate" for link in record_gold_links
-            )
             relation_results = []
-            if expects_artifact:
-                present = bool(region_kinds & {"artifact", "line_drawing"})
-                relation_totals["artifact_crop"]["evaluated"] += 1
-                relation_totals["artifact_crop"]["matched"] += int(present)
-                relation_results.append({"key": "artifact_crop", "matched": present})
-            if expects_plate:
-                present = "color_plate" in region_kinds
-                relation_totals["color_plate"]["evaluated"] += 1
-                relation_totals["color_plate"]["matched"] += int(present)
-                relation_results.append({"key": "color_plate", "matched": present})
-            relation_totals["evidence_chain"]["evaluated"] += 1
-            relation_totals["evidence_chain"]["matched"] += int(valid_relation_count > 0)
-            relation_results.append(
-                {"key": "evidence_chain", "matched": valid_relation_count > 0}
-            )
+            if has_relation_labels:
+                record_gold_links = gold_links_by_record[str(gold["_id"])]
+                expects_artifact = any(
+                    link.get("link_type") == "artifact_crop" for link in record_gold_links
+                )
+                expects_plate = any(
+                    link.get("link_type") == "color_plate" for link in record_gold_links
+                )
+                if expects_artifact:
+                    present = bool(region_kinds & {"artifact", "line_drawing"})
+                    relation_totals["artifact_crop"]["evaluated"] += 1
+                    relation_totals["artifact_crop"]["matched"] += int(present)
+                    relation_results.append({"key": "artifact_crop", "matched": present})
+                if expects_plate:
+                    present = "color_plate" in region_kinds
+                    relation_totals["color_plate"]["evaluated"] += 1
+                    relation_totals["color_plate"]["matched"] += int(present)
+                    relation_results.append({"key": "color_plate", "matched": present})
+                relation_totals["evidence_chain"]["evaluated"] += 1
+                relation_totals["evidence_chain"]["matched"] += int(valid_relation_count > 0)
+                relation_results.append(
+                    {"key": "evidence_chain", "matched": valid_relation_count > 0}
+                )
 
             items.append(
                 {
                     "record_id": str(record.get("_id")),
+                    "crop_region_id": record.get("evaluation_crop_region_id"),
+                    "color_plate_region_id": record.get("evaluation_plate_region_id"),
                     "artifact_id": artifact_id,
                     "gold_record_id": str(gold["_id"]),
                     "match_status": "matched",
@@ -504,14 +861,20 @@ class QualityEvaluationService:
         scoped_gold_regions = [
             region for region in gold_regions if region.get("page") in evaluated_pages
         ]
-        detection_metrics = [
-            detection_metric(
-                kind=kind,
-                predicted=[region for region in predicted_regions if region.get("kind") == kind],
-                gold=[region for region in scoped_gold_regions if region.get("kind") == kind],
-            )
-            for kind in REGION_KINDS
-        ]
+        detection_metrics = (
+            [
+                detection_metric(
+                    kind=kind,
+                    predicted=[
+                        region for region in predicted_regions if region.get("kind") == kind
+                    ],
+                    gold=[region for region in scoped_gold_regions if region.get("kind") == kind],
+                )
+                for kind in REGION_KINDS
+            ]
+            if has_detection_labels
+            else []
+        )
 
         matched_records = len(matched_gold_ids)
         predicted_with_id = sum(bool(record_artifact_id(record)) for record in records)
@@ -543,6 +906,9 @@ class QualityEvaluationService:
                 "predicted_records": len(records),
                 "gold_records": len(gold_records),
                 "matched_records": matched_records,
+                "unmatched_gold_records": sum(
+                    item["match_status"] == "not_found" for item in items
+                ),
                 "unmatched_predicted_records": len(unmatched_predicted),
                 "ambiguous_records": len(ambiguous),
                 "artifact_id_precision": round(artifact_precision, 4),
@@ -566,7 +932,9 @@ class QualityEvaluationService:
                     str(gold.get("canonical_artifact_id") or gold.get("_id"))
                     for gold in gold_records
                     if str(gold.get("_id")) not in matched_gold_ids
-                ][:200] if full_document else [],
+                ][:200]
+                if full_document
+                else [],
                 "ambiguous": ambiguous[:200],
             },
             "warnings": warnings,

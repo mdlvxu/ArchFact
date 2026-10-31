@@ -36,14 +36,38 @@ async def upload_document(
     container: Annotated[Container, Depends(get_container)],
 ) -> ApiResponse[DocumentCreated]:
     document = await container.document_service.upload(file)
+    reused_existing = bool(document.get("_reused_existing", False))
     return ApiResponse(
-        message="PDF 上传成功",
+        message=(
+            "该 PDF 已存在，已复用现有文件，无需重新导入"
+            if reused_existing
+            else "PDF 上传成功"
+        ),
         data=DocumentCreated(
             document_id=document["_id"],
             filename=document["filename"],
             size=document["size"],
             status=document["status"],
+            reused_existing=reused_existing,
         ),
+    )
+
+
+@router.get("", response_model=ApiResponse[list[DocumentCreated]])
+async def list_documents(
+    container: Annotated[Container, Depends(get_container)],
+) -> ApiResponse[list[DocumentCreated]]:
+    documents = await container.document_service.list()
+    return ApiResponse(
+        data=[
+            DocumentCreated(
+                document_id=document["_id"],
+                filename=document["filename"],
+                size=document["size"],
+                status=document["status"],
+            )
+            for document in documents
+        ]
     )
 
 

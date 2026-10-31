@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import io
 import re
 import unicodedata
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pymongo.errors import DuplicateKeyError
+
 from app.core.config import Settings
 from app.core.errors import ConflictError, DomainError
-from app.domain.identifiers import canonical_artifact_id, clean_value, normalize_identifier
+from app.domain.identifiers import (
+    canonical_artifact_id,
+    clean_value,
+    normalize_identifier,
+    normalize_report_name,
+)
 from app.domain.time import utc_now
 from app.repositories.mongo_repository import MongoRepository
 
@@ -38,6 +46,11 @@ REGION_KIND = {
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 EMPTY_MARKERS = {"", "-", "—", "－", "无", "none", "null", "nan"}
+_BASELINE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def baseline_lock(dataset_id: str) -> asyncio.Lock:
+    return _BASELINE_LOCKS.setdefault(dataset_id, asyncio.Lock())
 
 
 def stable_id(prefix: str, *parts: object) -> str:
@@ -62,6 +75,26 @@ def extract_color_plate_keys(value: Any) -> list[str]:
     return list(dict.fromkeys(normalize_reference(match) for match in matches))
 
 
+def split_figure_references(value: Any) -> tuple[list[str], list[str]]:
+    """Split figure and color-plate citations while preserving the source field."""
+    text = unicodedata.normalize("NFKC", clean_value(value) or "")
+    pattern = (
+        r"(?:彩版|彩图|图版|图|figure|fig\.?|plate)\s*"
+        r"[一二三四五六七八九十百〇零0-9A-Za-z\-]+"
+        r"(?:\s*[,.:：，]\s*[一二三四五六七八九十百〇零0-9A-Za-z\-]+)*"
+    )
+    figures: list[str] = []
+    plates: list[str] = []
+    for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+        reference = match.group(0).strip()
+        destination = (
+            plates if re.match(r"^(彩版|彩图|plate)", reference, re.IGNORECASE) else figures
+        )
+        if reference not in destination:
+            destination.append(reference)
+    return figures, plates
+
+
 class GoldDatasetService:
     """Imports human annotations into an isolated evaluation namespace.
 
@@ -72,6 +105,192 @@ class GoldDatasetService:
     def __init__(self, settings: Settings, repository: MongoRepository) -> None:
         self._settings = settings
         self._repository = repository
+
+    @staticmethod
+    def preview_workbook(*, filename: str, content: bytes) -> dict[str, Any]:
+        """Read workbook headers and a small preview without persisting it."""
+        try:
+            from openpyxl import load_workbook
+        except ImportError as exc:  # pragma: no cover
+            raise DomainError("缺少 openpyxl，无法读取人工标注 Excel") from exc
+        try:
+            workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        except Exception as exc:
+            raise DomainError("无法读取该 Excel 文件，请确认文件格式正确") from exc
+        worksheet = workbook[workbook.sheetnames[0]]
+        rows = worksheet.iter_rows(values_only=True)
+        first = next(rows, None)
+        headers = [clean_value(value) or "" for value in (first or ())]
+        if not headers or not any(headers):
+            workbook.close()
+            raise DomainError("Excel 首行未找到字段标题")
+        sample_rows = [
+            [clean_value(value) for value in row] for _, row in zip(range(8), rows, strict=False)
+        ]
+        workbook.close()
+        return {
+            "filename": filename,
+            "sheet_name": worksheet.title,
+            "headers": headers,
+            "sample_rows": sample_rows,
+        }
+
+    async def import_workbook(
+        self,
+        *,
+        document_id: str,
+        name: str,
+        version: str,
+        filename: str,
+        content: bytes,
+        key_mode: str,
+        field_mapping: dict[str, str],
+    ) -> dict[str, Any]:
+        """Import a report-specific spreadsheet as a reusable evaluation baseline."""
+        if key_mode not in {"artifact_id", "context_sequence"}:
+            raise DomainError("器物主键方式无效")
+        document = await self._repository.get_document(document_id)
+        report_key = normalize_report_name(document.get("filename", ""))
+        existing = next(
+            (
+                dataset
+                for dataset in await self._repository.list_gold_datasets()
+                if dataset.get("status") == "ready"
+                and normalize_report_name(dataset.get("document_filename", "")) == report_key
+            ),
+            None,
+        )
+        if existing:
+            raise ConflictError("该考古报告的人工标注基准已导入，无需重复导入")
+        preview = self.preview_workbook(filename=filename, content=content)
+        headers = set(preview["headers"])
+        if key_mode == "artifact_id" and not field_mapping.get("artifact_id"):
+            raise DomainError("请选择器物编号列作为主键")
+        if key_mode == "context_sequence" and not all(
+            field_mapping.get(key) for key in ("context_id", "sequence_no")
+        ):
+            raise DomainError("请选择遗迹号列和序号列作为联合主键")
+        missing_columns = [
+            column for column in field_mapping.values() if column and column not in headers
+        ]
+        if missing_columns:
+            raise DomainError(f"映射的 Excel 列不存在：{', '.join(missing_columns)}")
+
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        worksheet = workbook[workbook.sheetnames[0]]
+        iterator = worksheet.iter_rows(values_only=True)
+        columns = [clean_value(value) or "" for value in next(iterator, ())]
+        dataset_id = stable_id("gold", document_id, version, hashlib.sha256(content).hexdigest())
+        records: list[dict[str, Any]] = []
+        unkeyed_rows: list[int] = []
+        duplicate_keys: dict[str, int] = {}
+        source_rows: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
+        for source_row, values in enumerate(iterator, start=2):
+            raw = dict(zip(columns, values, strict=False))
+            if not any(clean_value(value) for value in values):
+                continue
+            if key_mode == "artifact_id":
+                artifact_id = normalize_identifier(
+                    clean_value(raw.get(field_mapping["artifact_id"])) or ""
+                )
+            else:
+                artifact_id = canonical_artifact_id(
+                    raw.get(field_mapping["context_id"]),
+                    raw.get(field_mapping["sequence_no"]),
+                )
+            if not artifact_id:
+                unkeyed_rows.append(source_row)
+                continue
+            fields = {
+                key: clean_value(raw.get(column)) if column else None
+                for key, column in field_mapping.items()
+                if key not in {"context_id", "sequence_no"}
+            }
+            fields["artifact_id"] = artifact_id
+            source_rows.append(
+                (
+                    source_row,
+                    fields,
+                    artifact_id,
+                    {key: clean_value(value) for key, value in raw.items() if key},
+                )
+            )
+            duplicate_keys[artifact_id] = duplicate_keys.get(artifact_id, 0) + 1
+        workbook.close()
+        for source_row, fields, artifact_id, raw in source_rows:
+            figure_references, color_plate_references = split_figure_references(
+                fields.get("figure_caption")
+            )
+            records.append(
+                {
+                    "_id": stable_id("goldrec", dataset_id, source_row),
+                    "dataset_id": dataset_id,
+                    "source_row": source_row,
+                    "canonical_artifact_id": artifact_id,
+                    "fields": fields,
+                    "raw": raw,
+                    "figure_references": figure_references,
+                    "color_plate_references": color_plate_references,
+                    "duplicate_key_count": duplicate_keys[artifact_id],
+                }
+            )
+        warnings = ["人工标注表由用户绑定到当前报告，系统未通过配套 PDF 指纹独立验证。"]
+        if unkeyed_rows:
+            warnings.append(f"{len(unkeyed_rows)} 行缺少有效主键，未纳入对照")
+        duplicated = sum(count > 1 for count in duplicate_keys.values())
+        if duplicated:
+            warnings.append(f"{duplicated} 个主键存在重复行，评测时将标记为歧义而不强行配对")
+        if not records:
+            raise DomainError("未找到包含有效器物主键的数据行")
+        now = utc_now()
+        dataset = {
+            "_id": dataset_id,
+            "name": name.strip() or filename,
+            "document_id": document_id,
+            "document_filename": document.get("filename", ""),
+            "report_key": report_key,
+            "version": version,
+            "status": "ready",
+            "source_type": "human_annotation",
+            "workbook_name": filename,
+            "key_mode": key_mode,
+            "field_mapping": field_mapping,
+            "source_headers": columns,
+            "record_count": len(records),
+            "source_row_count": len(records) + len(unkeyed_rows),
+            "unkeyed_row_count": len(unkeyed_rows),
+            "region_count": 0,
+            "asset_count": 0,
+            "link_count": 0,
+            "matched_artifact_assets": 0,
+            "matched_color_plate_assets": 0,
+            "capabilities": {"has_detection_labels": False, "has_relation_labels": False},
+            "source_document_verified": False,
+            "warnings": warnings,
+            "created_at": now,
+            "updated_at": now,
+        }
+        try:
+            async with baseline_lock(dataset_id):
+                await self._repository.replace_gold_dataset(
+                    dataset=dataset,
+                    records=records,
+                    regions=[],
+                    assets=[],
+                    links=[],
+                )
+        except DuplicateKeyError as exc:
+            raise ConflictError("该考古报告的人工标注基准已导入，无需重复导入") from exc
+        return dataset
+
+    async def delete_unreferenced_dataset(self, dataset_id: str) -> None:
+        async with baseline_lock(dataset_id):
+            await self._repository.get_gold_dataset(dataset_id)
+            if await self._repository.has_gold_dataset_references(dataset_id):
+                raise ConflictError("该基准已有关联评测，为保留历史结果不能删除")
+            await self._repository.delete_gold_dataset(dataset_id)
 
     async def import_wenjiashan(
         self,
@@ -140,13 +359,14 @@ class GoldDatasetService:
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
         }
-        await self._repository.replace_gold_dataset(
-            dataset=dataset,
-            records=records,
-            regions=regions,
-            assets=assets,
-            links=links,
-        )
+        async with baseline_lock(dataset_id):
+            await self._repository.replace_gold_dataset(
+                dataset=dataset,
+                records=records,
+                regions=regions,
+                assets=assets,
+                links=links,
+            )
         return dataset
 
     def _resolve_root(self) -> Path:
@@ -174,9 +394,7 @@ class GoldDatasetService:
     @staticmethod
     def _verify_source_document(root: Path, document: dict[str, Any]) -> bool | None:
         candidates = [
-            path
-            for path in root.parent.glob("*.pdf")
-            if "文家山" in path.name and path.is_file()
+            path for path in root.parent.glob("*.pdf") if "文家山" in path.name and path.is_file()
         ]
         if not candidates:
             return None
@@ -209,8 +427,7 @@ class GoldDatasetService:
             sequence = clean_value(raw.get("序号"))
             artifact_id = canonical_artifact_id(context, sequence)
             fields = {
-                target: clean_value(raw.get(source))
-                for source, target in FIELD_MAPPING.items()
+                target: clean_value(raw.get(source)) for source, target in FIELD_MAPPING.items()
             }
             fields["artifact_id"] = artifact_id or None
             records.append(

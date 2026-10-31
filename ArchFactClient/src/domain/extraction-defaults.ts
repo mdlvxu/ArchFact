@@ -46,7 +46,7 @@ export const defaultExtractionTemplates: ExtractionTemplate[] = [
         type: 'Text',
         required: false,
         instruction:
-          '提取当前器物的口、颈、腹、底、足、纹饰等形态描述；不得合并同页其他器物的描述。',
+          '提取当前器物对应的完整描述原文。即使其中的颜色、质地、完整程度、类别等信息也分别填入其他字段，形态描述仍须保留这些信息，不得只留下拆分后的残余内容；不得合并同页其他器物的描述。',
         evidence_kind: 'text',
       },
       {
@@ -111,7 +111,7 @@ export const defaultExtractionTemplates: ExtractionTemplate[] = [
         label: 'Morphological Description',
         type: 'Text',
         required: false,
-        instruction: '直接提取当前器物的外形描述原句，不进行总结、概括或补写。',
+        instruction: '直接提取当前器物对应的完整描述原句，不进行总结、概括或补写。颜色、质地、完整程度、类别等内容即使另填入专门字段，也必须保留在形态描述中，不得因字段拆分而删减。',
         evidence_kind: 'text',
       },
       {

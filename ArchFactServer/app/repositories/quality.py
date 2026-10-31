@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
 from typing import Any
 from uuid import uuid4
 
-from pymongo import DESCENDING, ReplaceOne, ReturnDocument, UpdateOne
-from pymongo.errors import DuplicateKeyError
+from pymongo import DESCENDING, ReturnDocument
 
-from app.core.errors import ConflictError, DomainError, NotFoundError
-from app.domain.page_semantics import PageSemantics
-from app.domain.relations import relation_key
+from app.core.errors import ConflictError, NotFoundError
 from app.domain.time import utc_now
-from app.domain.verification_sampling import select_balanced_verification_sample
-from app.infrastructure.mongodb import MongoDatabase
+
 
 class QualityPersistence:
     """Quality evaluation runs and item metrics."""
@@ -26,9 +20,12 @@ class QualityPersistence:
         dataset_id: str,
         dataset_version: str,
         matching_version_id: str,
+        template_name: str = "",
+        scoring_version: str = "human-left-fused-v1",
+        semantic_model: str = "",
     ) -> dict[str, Any]:
         active = await self._db.quality_evaluation_runs.find_one(
-            {"job_id": job_id, "status": {"$in": ["queued", "running"]}}
+            {"job_id": job_id, "status": {"$in": ["queued", "running", "paused"]}}
         )
         if active is not None:
             raise ConflictError("当前任务已有正在执行的质量评测")
@@ -40,6 +37,9 @@ class QualityPersistence:
             "dataset_id": dataset_id,
             "dataset_version": dataset_version,
             "matching_version_id": matching_version_id,
+            "template_name": template_name,
+            "scoring_version": scoring_version,
+            "semantic_model": semantic_model,
             "status": "queued",
             "progress": {"current": 0, "total": 5, "percent": 0, "stage": "queued"},
             "summary": None,
@@ -49,6 +49,7 @@ class QualityPersistence:
             "relation_metrics": {},
             "unmatched": {},
             "warnings": [],
+            "logs": [{"at": now.isoformat(), "stage": "queued", "message": "评测任务已入队"}],
             "error": None,
             "created_at": now,
             "updated_at": now,
@@ -89,6 +90,22 @@ class QualityPersistence:
         return await cursor.to_list(length=100)
 
 
+    async def list_quality_evaluation_runs_for_dataset(
+        self,
+        dataset_id: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        cursor = self._db.quality_evaluation_runs.find({"dataset_id": dataset_id}).sort(
+            "created_at", DESCENDING
+        )
+        return await cursor.to_list(length=max(1, min(limit, 200)))
+
+
+    async def list_recent_quality_evaluations(self, limit: int = 1000) -> list[dict[str, Any]]:
+        cursor = self._db.quality_evaluation_runs.find({}).sort("created_at", DESCENDING)
+        return await cursor.to_list(length=max(1, min(limit, 5000)))
+
+
     async def update_quality_evaluation_run(
         self,
         evaluation_id: str,
@@ -115,7 +132,7 @@ class QualityPersistence:
         now = utc_now()
         documents = [
             {
-                "_id": f"qualityitem_{run_id}_{item['record_id']}",
+                "_id": f"qualityitem_{run_id}_{item.get('gold_record_id') or item['record_id']}",
                 "evaluation_id": run_id,
                 "job_id": job_id,
                 "created_at": now,
@@ -155,7 +172,7 @@ class QualityPersistence:
     async def mark_stale_active_quality_evaluation_runs(self) -> int:
         now = utc_now()
         result = await self._db.quality_evaluation_runs.update_many(
-            {"status": {"$in": ["queued", "running"]}},
+            {"status": {"$in": ["queued", "running", "paused"]}},
             {
                 "$set": {
                     "status": "failed",

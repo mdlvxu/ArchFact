@@ -1,5 +1,8 @@
 import asyncio
 
+import pytest
+
+from app.core.errors import ConflictError
 from app.main import app
 from app.models.schemas import RematchChangesView, RematchCreate, VerificationItemUpdate
 from app.repositories.mongo_repository import MongoRepository
@@ -24,6 +27,29 @@ def test_rematch_defaults_to_preview_and_preserves_reviewed_links() -> None:
 
     assert payload.apply_immediately is False
     assert payload.preserve_reviewed is True
+
+
+def test_active_gt_evaluation_prevents_applying_new_fusion() -> None:
+    class Collection:
+        def __init__(self, result):
+            self.result = result
+
+        async def find_one(self, *_args, **_kwargs):
+            return self.result
+
+    class Repository:
+        _db = type("Database", (), {
+            "verification_sessions": Collection(None),
+            "quality_evaluation_runs": Collection({"_id": "quality-1"}),
+        })()
+
+        async def get_rematch_run(self, job_id, rematch_id):
+            return {"_id": rematch_id, "job_id": job_id, "status": "completed"}
+
+    with pytest.raises(ConflictError, match="GT 评测"):
+        asyncio.run(MongoRepository.apply_rematch_snapshot(
+            Repository(), job_id="job-1", rematch_id="rematch-1"
+        ))
 
 
 def test_rematch_reads_legacy_page_index_when_current_version_is_absent() -> None:
@@ -342,13 +368,14 @@ def test_mark_stale_active_verification_runs_resets_ai_review_sessions() -> None
         def __init__(self) -> None:
             self.ai_verification_runs = Collection()
             self.verification_sessions = Collection()
+            self.machine_verification_runs = Collection()
 
     repository = MongoRepository.__new__(MongoRepository)
     repository._db = Database()  # type: ignore[attr-defined]
 
     modified = asyncio.run(repository.mark_stale_active_verification_runs())
 
-    assert modified == 2
+    assert modified == 4
     run_query, run_update = repository._db.ai_verification_runs.calls[0]  # type: ignore[attr-defined]
     assert run_query["status"]["$in"] == ["queued", "running"]
     assert run_update["$set"]["status"] == "failed"

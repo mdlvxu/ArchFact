@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
+import { setLocale } from '@/i18n'
 import AssertionRules from '@/components/business/AssertionRules.vue'
 import MachineVerificationWorkspace from '@/components/business/MachineVerificationWorkspace.vue'
 import QualityEvaluationPanel from '@/components/business/QualityEvaluationPanel.vue'
@@ -56,6 +57,12 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('@/api/modules/extraction', () => apiMocks)
 
 vi.mock('element-plus', () => ({
+  ElSelect: {
+    props: ['modelValue'],
+    emits: ['change'],
+    template: '<select :value="modelValue" @change="$emit(\'change\', $event.target.value)"><slot /></select>',
+  },
+  ElOption: { props: ['value', 'label'], template: '<option :value="value">{{ label }}</option>' },
   ElMessage: {
     success: vi.fn(),
     warning: vi.fn(),
@@ -94,6 +101,7 @@ function createVersion(version: number): VerificationVersion {
 afterEach(() => {
   vi.useRealTimers()
   vi.clearAllMocks()
+  setLocale('en-US')
 })
 
 describe('Machine Verification 页面组件', () => {
@@ -132,6 +140,23 @@ describe('Machine Verification 页面组件', () => {
       props: { rules, running: false, paused: true },
     })
     expect(pausedWrapper.find('.terminate-button').exists()).toBe(true)
+  })
+
+  it('切换规则开关不标记为已更新，只有编辑文本才标记', async () => {
+    const wrapper = mount(AssertionRules, {
+      props: { rules, running: false },
+      global: { stubs: { Teleport: true } },
+    })
+
+    await wrapper.find('.rule-toggle').trigger('click')
+    const toggled = wrapper.emitted('update:rules')?.[0]?.[0] as VerificationRule[]
+    expect(toggled[0]).toMatchObject({ enabled: false })
+    expect(toggled[0]?.updated).toBeUndefined()
+
+    await wrapper.find('.rule-actions button').trigger('click')
+    await wrapper.find('.rule-dialog').trigger('submit')
+    const saved = wrapper.emitted('update:rules')?.[1]?.[0] as VerificationRule[]
+    expect(saved[0]?.updated).toBeFalsy()
   })
 
   it('通过 Add Rule 弹框保存，并将新规则插入列表最上方', async () => {
@@ -207,6 +232,7 @@ describe('Machine Verification 页面组件', () => {
   })
 
   it('新建实验基线保留提取数据，并把当前实验切换为新的 V1 起点', async () => {
+    setLocale('zh-CN')
     apiMocks.getVerificationVersions.mockResolvedValue([])
     const experiment = {
       id: 'experiment-1',
@@ -238,6 +264,7 @@ describe('Machine Verification 页面组件', () => {
   })
 
   it('当前实验尚未完成 V1 时，禁止创建下一实验基线', async () => {
+    setLocale('zh-CN')
     const experiment = {
       id: 'experiment-1',
       job_id: 'job-1',
@@ -260,6 +287,7 @@ describe('Machine Verification 页面组件', () => {
   })
 
   it('切换历史实验时只加载其断言版本，并锁定编辑与执行', async () => {
+    setLocale('zh-CN')
     apiMocks.getVerificationVersions.mockResolvedValue([])
     apiMocks.getActiveVerificationExperiment.mockResolvedValue({
       id: 'experiment-active', job_id: 'job-1', name: '实验 E2', sequence: 2,

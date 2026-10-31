@@ -88,14 +88,27 @@ onMounted(() => void loadPrompt())
         <span :class="{ 'system-prompt-editor__status--custom': isCustomized }">
           {{ isCustomized ? t('systemPrompt.customized') : t('systemPrompt.default') }}
         </span>
-        <button v-if="!editing" type="button" :disabled="loading" @click="beginEditing">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 14.8 1.1-3.7L13.7 2.5a1.8 1.8 0 0 1 2.5 2.5l-8.6 8.6L4 14.8Z" /><path d="m11.9 4.3 2.5 2.5M4 14.8l3.6-1.2" /></svg>
+        <button
+          v-if="!editing"
+          type="button"
+          :disabled="loading"
+          @click="beginEditing"
+        >
+          <svg
+            viewBox="0 0 20 20"
+            aria-hidden="true"
+          ><path d="m4 14.8 1.1-3.7L13.7 2.5a1.8 1.8 0 0 1 2.5 2.5l-8.6 8.6L4 14.8Z" /><path d="m11.9 4.3 2.5 2.5M4 14.8l3.6-1.2" /></svg>
           {{ t('common.edit') }}
         </button>
       </div>
     </header>
 
-    <div v-if="loading" class="system-prompt-editor__loading">{{ t('common.loading') }}</div>
+    <div
+      v-if="loading"
+      class="system-prompt-editor__loading"
+    >
+      {{ t('common.loading') }}
+    </div>
     <template v-else>
       <textarea
         v-if="editing"
@@ -104,17 +117,37 @@ onMounted(() => void loadPrompt())
         maxlength="8000"
         :aria-label="t('systemPrompt.title')"
       />
-      <pre v-else class="system-prompt-editor__preview">{{ savedContent }}</pre>
+      <pre
+        v-else
+        class="system-prompt-editor__preview"
+      >{{ savedContent }}</pre>
 
       <div class="system-prompt-editor__meta">
         {{ t('systemPrompt.length', { count: content.length, max: 8000, tokens: estimatedTokens(content) }) }}
       </div>
 
       <footer v-if="editing">
-        <button type="button" :disabled="!defaultContent" @click="restoreDefault">{{ t('constraint.defaultPrompt') }}</button>
+        <button
+          type="button"
+          :disabled="!defaultContent"
+          @click="restoreDefault"
+        >
+          {{ t('constraint.defaultPrompt') }}
+        </button>
         <div>
-          <button type="button" :disabled="saving" @click="cancelEditing">{{ t('common.cancel') }}</button>
-          <button type="button" class="system-prompt-editor__save" :disabled="!content.trim() || saving" @click="savePrompt">
+          <button
+            type="button"
+            :disabled="saving"
+            @click="cancelEditing"
+          >
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="button"
+            class="system-prompt-editor__save"
+            :disabled="!content.trim() || saving"
+            @click="savePrompt"
+          >
             {{ saving ? t('systemPrompt.saving') : t('systemPrompt.save') }}
           </button>
         </div>
@@ -125,7 +158,7 @@ onMounted(() => void loadPrompt())
 
 <style scoped lang="scss">
 .system-prompt-editor { padding: 14px 16px; margin: 0 0 16px; background: rgb(255 255 255 / 76%); border: 1px solid #eadfd4; border-radius: 9px; box-shadow: 0 2px 7px rgb(84 55 34 / 6%); }
-.system-prompt-editor header, .system-prompt-editor__actions, .system-prompt-editor footer, .system-prompt-editor footer > div { display: flex; gap: 8px; align-items: center; }
+.system-prompt-editor header, .system-prompt-editor__actions, .system-prompt-editor footer, .system-prompt-editor footer > div { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
 .system-prompt-editor header, .system-prompt-editor footer { justify-content: space-between; }
 .system-prompt-editor h3 { margin: 0 0 3px; }
 .system-prompt-editor small { color: #897568; }
